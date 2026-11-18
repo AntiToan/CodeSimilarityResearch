@@ -1,32 +1,37 @@
-# Python cache
+
+# Python
 __pycache__/
 *.py[cod]
+*.pyd
 
-# Virtual environment
+# Virtual Environment
 .venv/
 venv/
-
-# IDE
-.vscode/
-.idea/
+env/
 
 # Environment variables
 .env
+.env.*
 
-# Dataset files (avoid uploading large datasets)
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+
+# Generated data
 data/raw/
 data/processed/
+data/generated/
+data/pairs/
 
-# Model checkpoints
-*.pt
-*.pth
-*.bin
-*.safetensors
-
-# Logs
-logs/
+# Experiment outputs
+experiments/results/
+outputs/
 *.log
 
-# OS files
-.DS_Store
-Thumbs.db
+# Model checkpoints
+*.pth
+*.pt
+*.bin
+*.safetensors
