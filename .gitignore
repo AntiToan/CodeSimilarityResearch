@@ -1,0 +1,32 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
+
+# Dataset files (avoid uploading large datasets)
+data/raw/
+data/processed/
+
+# Model checkpoints
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
