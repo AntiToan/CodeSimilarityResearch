@@ -1,0 +1,109 @@
+
+{
+  "config_version": "1.0.0",
+  "pipeline_version": "1.0.0",
+  "dataset": {
+    "name": "poj104",
+    "language": "cpp",
+    "raw_dir": "data/raw/poj104",
+    "processed_dir": "data/processed/poj104",
+    "metadata_dir": "data/processed/poj104/metadata",
+    "source_metadata_file": "data/processed/poj104/metadata/samples.csv"
+  },
+  "reproducibility": {
+    "seed": 42,
+    "deterministic": true
+  },
+  "split": {
+    "strategy": "stratified_group",
+    "ratios": {
+      "train": 0.8,
+      "validation": 0.1,
+      "test": 0.1
+    },
+    "group_by_problem": true,
+    "group_duplicates": true
+  },
+  "duplicate_detection": {
+    "exact_duplicates_only": true,
+    "keep_all_sources": true,
+    "same_split_required": true
+  },
+  "variants": {
+    "target_per_original": 2,
+    "max_variants_per_original": 2,
+    "max_attempts_per_variant": 5,
+    "allow_partial_quota": true,
+    "allow_variant_chaining": false,
+    "accepted_status": "accepted"
+  },
+  "transformations": {
+    "enabled": [
+      "whitespace",
+      "formatting",
+      "comments"
+    ],
+    "probabilities": {
+      "whitespace": 0.3333333333,
+      "formatting": 0.3333333333,
+      "comments": 0.3333333334
+    },
+    "sampling": "without_replacement",
+    "prefer_distinct_types": true
+  },
+  "negative_pairs": {
+    "target_per_anchor": 3,
+    "prefer_different_problem_ids": true,
+    "originals_only": true,
+    "same_problem_allowed": false,
+    "same_lineage_allowed": false,
+    "max_sampling_attempts": 30
+  },
+  "negative_screening": {
+    "metric": "token_jaccard",
+    "token_mode": "unique_tokens",
+    "threshold": 0.85,
+    "reject_if_score_greater_than_or_equal": true,
+    "remove_comments": true,
+    "ignore_whitespace": true,
+    "ignore_formatting": true,
+    "preserve_identifiers": true,
+    "preserve_literals": true,
+    "fail_closed": true
+  },
+  "pair_selection": {
+    "balance_labels_per_split": true,
+    "target_ratio": 1.0,
+    "selection_count": "min_class_count",
+    "oversampling": false,
+    "cross_split_transfer": false,
+    "prefer_endpoint_diversity": true,
+    "prefer_problem_distribution_balance": true
+  },
+  "validation": {
+    "fail_closed": true,
+    "require_structural_validation": true,
+    "require_transformation_validation": true,
+    "require_syntax_validation": true,
+    "semantic_validation_required": false,
+    "parser": {
+      "name": "tree_sitter",
+      "language": "cpp",
+      "timeout_seconds": 3
+    },
+    "compiler": {
+      "name": "clang",
+      "standard": "c++17",
+      "syntax_only": true,
+      "timeout_seconds": 10
+    }
+  },
+  "output": {
+    "candidate_dir": "data/pairs/candidates",
+    "selected_dir": "data/pairs/selected",
+    "pairs_dir": "data/pairs",
+    "split_dir": "data/pairs/splits",
+    "reports_dir": "data/pairs/reports",
+    "config_snapshot_dir": "data/pairs/configs"
+  }
+}
