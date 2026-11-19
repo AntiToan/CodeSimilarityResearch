@@ -5,6 +5,7 @@ from src.transformations.base import (
 )
 from src.transformations.whitespace import WhitespaceTransformation
 from src.transformations.formatting import FormattingTransformation
+from src.transformations.comments import CommentsTransformation
 
 __all__ = [
     "Transformation",
@@ -12,4 +13,5 @@ __all__ = [
     "TransformationResult",
     "WhitespaceTransformation",
     "FormattingTransformation",
+    "CommentsTransformation",
 ]
