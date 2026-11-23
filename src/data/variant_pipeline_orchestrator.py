@@ -1,15 +1,12 @@
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 from src.data.variant_registry import VariantRegistryRecord
 from src.transformations.variant_generator import (
     GeneratedVariant,
     VariantGenerationResult,
 )
-
 
 @dataclass(frozen=True)
 class VariantPersistenceResult:
@@ -22,7 +19,6 @@ class VariantPersistenceResult:
     @property
     def success(self) -> bool:
         return self.written and self.registered
-
 
 @dataclass
 class VariantPipelineSampleResult:
@@ -42,7 +38,6 @@ class VariantPipelineSampleResult:
     @property
     def failed_count(self) -> int:
         return sum(not item.success for item in self.persistence_results)
-
 
 class VariantPipelineOrchestrator:
     """Orchestrate generation, writing, and registry persistence."""

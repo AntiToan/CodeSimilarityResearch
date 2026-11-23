@@ -1,0 +1,312 @@
+﻿FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\duplicate_detector.py
+LINE: 25
+CODE: def detect_exact_duplicates(samples: Iterable[dict], source_root: Path) -> tuple[dict[str, str], list[dict]]:
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\duplicate_detector.py
+LINE: 42
+CODE: relative_path = Path(str(sample["source_path"]))
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\duplicate_detector.py
+LINE: 43
+CODE: file_path = (source_root / relative_path).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\duplicate_detector.py
+LINE: 45
+CODE: if not file_path.is_relative_to(source_root.resolve()):
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 20
+CODE: raw_path = Path(raw_dir)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 21
+CODE: processed_path = Path(processed_dir)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 22
+CODE: csv_path = Path(output_csv)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 34
+CODE: source_files = sorted(raw_path.rglob("*.txt"))
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 36
+CODE: csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 51
+CODE: relative_path = raw_file.relative_to(raw_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 60
+CODE: print("DEBUG raw_path:", raw_path.resolve())
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 61
+CODE: print("DEBUG processed_path:", processed_path.resolve())
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 63
+CODE: print("DEBUG processed_file:", processed_file.resolve())
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 88
+CODE: "source_path": processed_file.relative_to(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\metadata_generator.py
+LINE: 91
+CODE: "original_path": raw_file.relative_to(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 14
+CODE: config_path: str | Path = "config/pair_generation_config.json",
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 16
+CODE: self.config_path = Path(config_path).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 18
+CODE: if not self.config_path.exists():
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 20
+CODE: f"Config file not found: {self.config_path}"
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 23
+CODE: if not self.config_path.is_file():
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 25
+CODE: f"config path is not a file: {self.config_path}"
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 29
+CODE: with self.config_path.open("r", encoding="utf-8") as file:
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 61
+CODE: def resolve_path(self, *keys: str) -> Path:
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 66
+CODE: configured_path = Path(self.get(*keys))
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 68
+CODE: if configured_path.is_absolute():
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 69
+CODE: return configured_path.resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 71
+CODE: project_root = self.config_path.parent.parent
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\pair_generation_config.py
+LINE: 72
+CODE: return (project_root / configured_path).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_cli.py
+LINE: 24
+CODE: default=Path("data/processed/poj104"),
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_cli.py
+LINE: 45
+CODE: default=Path("data/processed/poj104/variants"),
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_cli.py
+LINE: 52
+CODE: default=Path("data/processed/poj104/metadata/variant_registry.csv"),
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_cli.py
+LINE: 59
+CODE: default=Path("data/pairs/reports/variant_generation_report.json"),
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_cli.py
+LINE: 90
+CODE: source_root = args.dataset_root
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_cli.py
+LINE: 95
+CODE: source_root=source_root,
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_report.py
+LINE: 191
+CODE: output_path = Path(output_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_report.py
+LINE: 192
+CODE: output_path.parent.mkdir(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_report.py
+LINE: 207
+CODE: temp_path = Path(temp_file.name)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_run_summary.py
+LINE: 91
+CODE: output_path = Path(output_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_generation_run_summary.py
+LINE: 92
+CODE: output_path.parent.mkdir(parents=True, exist_ok=True)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_output_writer.py
+LINE: 32
+CODE: self.variants_root = Path(variants_root).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_output_writer.py
+LINE: 53
+CODE: def build_path(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_output_writer.py
+LINE: 85
+CODE: ).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_output_writer.py
+LINE: 88
+CODE: if not output_path.is_relative_to(self.variants_root):
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_output_writer.py
+LINE: 105
+CODE: output_path = self.build_path(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_output_writer.py
+LINE: 111
+CODE: output_path.parent.mkdir(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_pipeline_orchestrator.py
+LINE: 127
+CODE: source_path = Path(source_path).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_pipeline_orchestrator.py
+LINE: 152
+CODE: Path(original_source_path).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry.py
+LINE: 65
+CODE: self.registry_path = Path(registry_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry.py
+LINE: 69
+CODE: path = Path(source_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry.py
+LINE: 192
+CODE: self.registry_path.parent.mkdir(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry.py
+LINE: 208
+CODE: temp_path = Path(temp_file.name)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry.py
+LINE: 233
+CODE: source_file = Path(record.source_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry_integrity.py
+LINE: 64
+CODE: def _safe_path(path_value: str) -> Path | None:
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry_integrity.py
+LINE: 66
+CODE: return Path(path_value).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry_integrity.py
+LINE: 152
+CODE: variant_path = self._safe_path(row.get("source_path", ""))
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_registry_integrity.py
+LINE: 178
+CODE: original_path = self._safe_path(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 58
+CODE: source_root: Path | str,
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 60
+CODE: self.metadata_path = Path(metadata_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 61
+CODE: self.splits_path = Path(splits_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 62
+CODE: self.source_root = Path(source_root).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 115
+CODE: def _resolve_source_path(self, relative_path: str) -> Path:
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 116
+CODE: candidate = (self.source_root / relative_path).resolve()
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 119
+CODE: if not candidate.is_relative_to(self.source_root):
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 197
+CODE: source_path = self._resolve_source_path(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\data\variant_source_loader.py
+LINE: 207
+CODE: source_text = source_path.read_text(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 14
+CODE: output_dir: str | Path,
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 21
+CODE: output_dir: Processed dataset directory.
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 26
+CODE: input_path = Path(input_dir)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 27
+CODE: output_path = Path(output_dir)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 39
+CODE: output_path.mkdir(parents=True, exist_ok=True)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 41
+CODE: source_files = sorted(input_path.rglob("*.txt"))
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 55
+CODE: relative_path = source_file.relative_to(input_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 61
+CODE: destination_file.parent.mkdir(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 66
+CODE: destination_file.write_text(
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\batch_processor.py
+LINE: 106
+CODE: report_path.parent.mkdir(parents=True, exist_ok=True)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\preprocessing\source_reader.py
+LINE: 44
+CODE: path = Path(file_path)
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\transformations\validation\v3_syntax.py
+LINE: 48
+CODE: source_path = Path(temp_dir) / "candidate.cpp"
+
+FILE: D:\University\NCKH\fullstack\CodeSimilarityResearch\src\transformations\validation\v3_syntax.py
+LINE: 49
+CODE: source_path.write_text(
+
