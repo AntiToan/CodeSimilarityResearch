@@ -2,7 +2,16 @@
 
 ## Trạng thái
 
-Phase II **chưa bắt đầu chính thức**: fine-tune và đánh giá chỉ chạy khi dataset pairs đã freeze (sau I.8/I.9). Branch `phase2/codebert-embedding` chỉ chuẩn bị phần không cần dataset của II.1 và II.2.
+Phase II **chưa bắt đầu chính thức**: fine-tune và đánh giá chỉ chạy khi dataset pairs đã freeze (sau I.8/I.9). Branch `phase2/part-a` làm phần không cần dataset:
+
+| Checkpoint | Đã có | File |
+|---|---|---|
+| II.1 | Tóm tắt CodeBERT, UniXcoder, contrastive loss; thứ tự chọn mô hình | `docs/phase2/II1_model_selection.md` |
+| II.2 | Module embedding; đo độ dài token của POJ-104 | `src/algorithms/codebert.py`, `scripts/measure_truncation.py`, `docs/phase2/II2_representation.md` |
+| II.3 | Bi-encoder dùng chung trọng số, contrastive loss | `src/models/contrastive_model.py` |
+| II.4 (khung) | Vòng lặp huấn luyện, chạy thử với CodeBERT trên 20 cặp đồ chơi | `src/models/train.py`, `scripts/smoke_train_codebert.py` |
+| II.6 (quy ước) | Tên checkpoint, chỉ giữ bản tốt nhất, không ghi đè lần chạy cũ | `src/models/train.py` |
+| Test | Không cần tải mô hình | `tests/test_codebert_embedding.py`, `tests/test_phase2_models.py` |
 
 ## Thứ tự checkpoint
 
@@ -51,9 +60,31 @@ scores = similarity_matrix(vectors)             # ma trận điểm (N, N) trong
 
 Cấu hình thí nghiệm zero-shot: `experiments/configs/codebert_zero_shot.json` (`dataset_version` điền sau khi freeze).
 
+## Huấn luyện (II.4) và checkpoint (II.6)
+
+```python
+from transformers import AutoTokenizer
+from src.models.contrastive_model import BiEncoder
+from src.models.train import PairExample, TrainConfig, train
+
+config = TrainConfig(run_id="r01", dataset_version="v1.0", device="cuda",
+                     output_dir="/content/drive/MyDrive/codesim/r01")
+tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+model = BiEncoder.from_pretrained(config.model_name, pooling=config.pooling)
+result = train(model, tokenizer, train_pairs, val_pairs, config)   # list[PairExample]
+```
+
+- Checkpoint lưu tại `<output_dir>/<model>-<dataset_version>-<run_id>-ep<k>/`; chỉ giữ bản có validation loss thấp nhất của lần chạy.
+- `<output_dir>/run_report.json` ghi config, loss từng epoch, commit, phiên bản Python/torch/transformers, GPU.
+- Thư mục đã có kết quả thì không ghi đè: lần chạy mới cần `run_id` hoặc `output_dir` mới.
+- Hiện chọn checkpoint theo validation loss; khi có cặp validation thật (sau freeze), II.5 đổi sang F1 trên validation.
+- Chạy thử toàn bộ đường đi với CodeBERT thật (chỉ để kiểm tra code, **không** phải kết quả nghiên cứu):
+  `python scripts/smoke_train_codebert.py --run-id II4-smoke-01`
+
 ## Test
 
 ```powershell
 python -m pytest tests/test_codebert_embedding.py -v      # không cần torch
+python -m pytest tests/test_phase2_models.py -v           # cần torch + transformers, không tải mô hình
 $env:RUN_MODEL_TESTS = "1"; python -m pytest tests/test_codebert_embedding.py -v   # tải CodeBERT (~500 MB) và chạy thật
 ```
