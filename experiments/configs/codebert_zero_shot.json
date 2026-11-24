@@ -1,14 +1,23 @@
 {
-  "experiment_id": "II.2-codebert-zero-shot",
-  "checkpoint": "II.2",
+  "experiment_id": "II.7-codebert-zero-shot",
+  "checkpoint": "II.7",
   "seed": 42,
   "dataset_version": null,
+  "data": {
+    "pairs_dir": "data/pairs",
+    "samples_csv": "data/processed/poj104/metadata/samples.csv",
+    "samples_root": "data/processed",
+    "source_splits_csv": "data/processed/poj104/metadata/source_splits.csv",
+    "variants_csv": "data/processed/poj104/metadata/variant_registry.csv",
+    "variants_root": "data/processed/poj104/variants"
+  },
   "embedding": {
     "model_name": "microsoft/codebert-base",
     "max_length": 512,
     "pooling": "cls",
     "batch_size": 8,
-    "device": "cpu"
+    "device": "cpu",
+    "mode_token": null
   },
   "ablations": {
     "pooling": ["cls", "mean"],
@@ -16,5 +25,5 @@
   },
   "score": "(cosine + 1) / 2",
   "threshold_selection": "validation split only, frozen before test",
-  "notes": "dataset_version is filled in after the pair dataset is frozen (I.8/I.9). Do not run on the test split at this stage."
+  "notes": "dataset_version is filled in after the pair dataset is frozen (I.8/I.9). Run on validation; the test split belongs to III.2."
 }
