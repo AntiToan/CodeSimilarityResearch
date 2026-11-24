@@ -1,0 +1,25 @@
+{
+  "experiment_id": "II.7-unixcoder-zero-shot",
+  "checkpoint": "II.7",
+  "seed": 42,
+  "dataset_version": null,
+  "data": {
+    "pairs_dir": "data/pairs",
+    "samples_csv": "data/processed/poj104/metadata/samples.csv",
+    "samples_root": "data/processed",
+    "source_splits_csv": "data/processed/poj104/metadata/source_splits.csv",
+    "variants_csv": "data/processed/poj104/metadata/variant_registry.csv",
+    "variants_root": "data/processed/poj104/variants"
+  },
+  "embedding": {
+    "model_name": "microsoft/unixcoder-base",
+    "max_length": 512,
+    "pooling": "mean",
+    "batch_size": 8,
+    "device": "cpu",
+    "mode_token": "<encoder-only>"
+  },
+  "score": "(cosine + 1) / 2",
+  "threshold_selection": "validation split only, frozen before test",
+  "notes": "Input <s> <encoder-only> </s> code </s> and mean pooling, as in the official UniXcoder/unixcoder.py. unixcoder-base was pre-trained on six languages without C/C++; microsoft/unixcoder-base-nine adds C, C++ and C# (team decision, see docs/phase2/II1_model_selection.md)."
+}

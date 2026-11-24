@@ -18,8 +18,16 @@ Tài liệu tóm tắt để chọn mô hình biểu diễn mã nguồn cho Phas
   - Dùng chung một Transformer cho ba chế độ: chỉ encoder, chỉ decoder, encoder-decoder. Chế độ được chọn bằng token đặc biệt ở đầu chuỗi và mặt nạ attention.
   - Khi tiền huấn luyện có dùng thông tin AST và comment, cùng contrastive learning để học vector đại diện cho cả đoạn code.
   - Bài báo có đánh giá clone detection trên POJ-104.
-- **Cách dùng đúng:** tạo embedding theo hướng dẫn trong repo chính thức của UniXcoder (chế độ encoder-only, cách pooling). Không dùng `AutoModel` rồi lấy `[CLS]` như CodeBERT khi chưa đối chiếu **[cần kiểm tra]**.
-- **Dữ liệu tiền huấn luyện có C/C++ hay không:** **[cần kiểm tra]** trong bài báo trước khi viết vào báo cáo.
+- **Cách tạo embedding** (đã đối chiếu với `UniXcoder/unixcoder.py` trong https://github.com/microsoft/CodeBERT):
+  - Đầu vào là `<s> <encoder-only> </s>` + token của code + `</s>`. Code bị cắt còn `max_length − 4` token trước khi thêm token đặc biệt.
+  - Vector của cả đoạn code là **trung bình các token không phải padding** (mean pooling), không phải `[CLS]`. README chuẩn hóa L2 trước khi tính cosine.
+  - Script fine-tune POJ-104 trong cùng repo cũng dùng mean pooling rồi chuẩn hóa L2, với `block_size 400`.
+  - Script đó viết token chế độ là `<encoder_only>` (gạch dưới). Với tokenizer của `microsoft/unixcoder-base`, chuỗi này thành `<unk>` (id 3), còn `<encoder-only>` là token riêng (id 6). Đề tài dùng `<encoder-only>` như `unixcoder.py`.
+  - Cài đặt: `mode_token="<encoder-only>"` và `pooling="mean"` trong `EmbeddingConfig`/`TrainConfig`; cấu hình mẫu ở `experiments/configs/unixcoder_zero_shot.json`. Mô hình tải được bằng `AutoModel` (kiến trúc RoBERTa).
+- **Dữ liệu tiền huấn luyện** (README của UniXcoder trong cùng repo):
+  - `unixcoder-base`: "The model can support six languages: java, ruby, python, php, javascript, and go." **Không có C/C++.**
+  - `unixcoder-base-nine`: thêm "1.5M NL-PL pairs of C, C++ and C# programming language".
+  - Với bài C/C++, `microsoft/unixcoder-base-nine` có thể phù hợp hơn. Đổi mô hình trong stack là việc nhóm quyết; nên đo cả hai trên validation.
 
 ## 3. Hàm mất mát contrastive
 
@@ -45,5 +53,5 @@ Tài liệu tóm tắt để chọn mô hình biểu diễn mã nguồn cho Phas
 
 ## 5. Việc còn mở
 
-- Đối chiếu các mục **[cần kiểm tra]** với bài báo UniXcoder.
+- Chọn `unixcoder-base` hay `unixcoder-base-nine` (hoặc đo cả hai) cho bước 3.
 - Nhóm cần chốt độ phủ dataset (hiện chỉ có biến thể Type-1) trước khi fine-tune; nếu không, kết quả fine-tune không chứng minh được mục tiêu Type-2, Type-3 và bài viết lại bằng LLM.

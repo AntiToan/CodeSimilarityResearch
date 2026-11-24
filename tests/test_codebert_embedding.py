@@ -166,3 +166,71 @@ def test_codebert_end_to_end():
     assert 0.0 <= score_ab <= 1.0
     assert score_ab == pytest.approx(embedder.similarity(code_b, code_a))
     assert embedder.similarity(code_a, code_a) == pytest.approx(1.0, abs=1e-6)
+
+
+# ---------- UniXcoder-style inputs (mode token) ----------
+
+class FakeModeTokenizer:
+    """Tiny vocabulary with the special tokens used by UniXcoder."""
+
+    cls_token, sep_token = "<s>", "</s>"
+    pad_token_id, unk_token_id = 1, 3
+    vocab = {"<s>": 0, "<pad>": 1, "</s>": 2, "<unk>": 3, "<encoder-only>": 6}
+
+    def tokenize(self, code):
+        return code.split()
+
+    def convert_tokens_to_ids(self, tokens):
+        if isinstance(tokens, str):
+            return self.vocab.get(tokens, self.unk_token_id)
+        return [self.vocab.get(token, 10 + len(token)) for token in tokens]
+
+
+def test_build_mode_inputs_layout_truncation_and_padding():
+    from src.algorithms.codebert import build_mode_inputs
+
+    batch = build_mode_inputs(FakeModeTokenizer(), ["a bb ccc dddd", "a"], 7, "<encoder-only>")
+    # <s> <encoder-only> </s> + at most 7 - 4 = 3 code tokens + </s>
+    assert batch["input_ids"].tolist() == [
+        [0, 6, 2, 11, 12, 13, 2],
+        [0, 6, 2, 11, 2, 1, 1],
+    ]
+    assert batch["attention_mask"].tolist() == [[1] * 7, [1, 1, 1, 1, 1, 0, 0]]
+
+
+def test_build_mode_inputs_rejects_unknown_mode_token():
+    from src.algorithms.codebert import build_mode_inputs
+
+    with pytest.raises(EmbeddingError, match="no token"):
+        build_mode_inputs(FakeModeTokenizer(), ["a"], 16, "<encoder_only>")
+
+
+def test_token_lengths_with_mode_token_counts_four_special_tokens():
+    embedder = CodeEmbedder(
+        EmbeddingConfig(mode_token="<encoder-only>", pooling="mean"),
+        tokenizer=FakeModeTokenizer(),
+    )
+    assert embedder.token_lengths(["a b c"]) == [7]
+
+
+@pytest.mark.parametrize("kwargs", [{"mode_token": ""}, {"mode_token": "<m>", "max_length": 4}])
+def test_config_rejects_invalid_mode_token(kwargs):
+    with pytest.raises(EmbeddingError):
+        EmbeddingConfig(**kwargs)
+
+
+def test_config_from_checkpoint_reads_training_settings(tmp_path):
+    import json
+
+    (tmp_path / "bi_encoder.json").write_text(
+        json.dumps({"pooling": "mean", "max_length": 256, "mode_token": "<encoder-only>",
+                    "threshold": 0.7}),
+        encoding="utf-8",
+    )
+    config = EmbeddingConfig.from_checkpoint(tmp_path, device="cuda")
+    assert config.model_name == str(tmp_path)
+    assert (config.pooling, config.max_length, config.mode_token, config.device) == (
+        "mean", 256, "<encoder-only>", "cuda",
+    )
+    with pytest.raises(EmbeddingError, match="Not a bi-encoder"):
+        EmbeddingConfig.from_checkpoint(tmp_path / "missing")

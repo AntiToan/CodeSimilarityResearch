@@ -9,18 +9,23 @@ into [0, 1] as required for every similarity algorithm in the project.
 Decision thresholds must be chosen on the validation split, never fixed
 in advance.
 
-UniXcoder note: check the official model README for the expected special
-tokens and pooling before using ``microsoft/unixcoder-base`` here.
+UniXcoder: set ``mode_token="<encoder-only>"`` and ``pooling="mean"``. The
+input then becomes ``<s> <encoder-only> </s> code </s>``, as in the official
+``UniXcoder/unixcoder.py`` (microsoft/CodeBERT repository), whose sentence
+embedding is the mean over non-padding tokens.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 SUPPORTED_POOLING = ("cls", "mean")
+CHECKPOINT_META_FILE = "bi_encoder.json"
 
 
 class EmbeddingError(ValueError):
@@ -34,6 +39,7 @@ class EmbeddingConfig:
     pooling: str = "cls"
     batch_size: int = 8
     device: str = "cpu"
+    mode_token: str | None = None  # "<encoder-only>" for UniXcoder
 
     def __post_init__(self) -> None:
         if not isinstance(self.model_name, str) or not self.model_name.strip():
@@ -48,6 +54,11 @@ class EmbeddingConfig:
             raise EmbeddingError("batch_size must be a positive integer.")
         if not isinstance(self.device, str) or not self.device.strip():
             raise EmbeddingError("device must be a non-empty string.")
+        if self.mode_token is not None:
+            if not isinstance(self.mode_token, str) or not self.mode_token.strip():
+                raise EmbeddingError("mode_token must be None or a non-empty string.")
+            if self.max_length <= 4:
+                raise EmbeddingError("max_length must be > 4 when mode_token is used.")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "EmbeddingConfig":
@@ -57,6 +68,29 @@ class EmbeddingConfig:
         if unknown:
             raise EmbeddingError(f"Unknown embedding config keys: {sorted(unknown)}")
         return cls(**dict(data))
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint_dir: str | Path, **overrides: Any) -> "EmbeddingConfig":
+        """Config for a fine-tuned checkpoint saved by ``src.models.train``.
+
+        Pooling, mode token and max length come from ``bi_encoder.json`` so a
+        checkpoint is always evaluated the way it was trained.
+        """
+        directory = Path(checkpoint_dir)
+        meta_path = directory / CHECKPOINT_META_FILE
+        if not meta_path.is_file():
+            raise EmbeddingError(f"Not a bi-encoder checkpoint (missing {meta_path}).")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if "pooling" not in meta:
+            raise EmbeddingError(f"{meta_path} has no 'pooling' entry.")
+        values: dict[str, Any] = {
+            "model_name": str(directory),
+            "pooling": meta["pooling"],
+            "max_length": meta.get("max_length", 512),
+            "mode_token": meta.get("mode_token"),
+        }
+        values.update(overrides)
+        return cls.from_dict(values)
 
 
 @dataclass(frozen=True)
@@ -140,6 +174,41 @@ def similarity_matrix(embeddings: np.ndarray) -> np.ndarray:
     return scores
 
 
+def build_mode_inputs(
+    tokenizer: Any,
+    codes: Sequence[str],
+    max_length: int,
+    mode_token: str,
+) -> dict[str, np.ndarray]:
+    """UniXcoder-style batch: ``<s> MODE </s> code </s>``, padded to the longest row.
+
+    Code tokens are cut to ``max_length - 4`` first, as in the official
+    ``unixcoder.py``. A mode token missing from the vocabulary is an error
+    (e.g. ``<encoder_only>`` with an underscore maps to ``<unk>``).
+    """
+    if max_length <= 4:
+        raise EmbeddingError("max_length must be > 4 when mode_token is used.")
+    mode_id = tokenizer.convert_tokens_to_ids(mode_token)
+    if mode_id is None or mode_id == tokenizer.unk_token_id:
+        raise EmbeddingError(f"Tokenizer vocabulary has no token {mode_token!r}.")
+
+    rows = []
+    for code in codes:
+        tokens = tokenizer.tokenize(code)[: max_length - 4]
+        rows.append(
+            tokenizer.convert_tokens_to_ids(
+                [tokenizer.cls_token, mode_token, tokenizer.sep_token, *tokens, tokenizer.sep_token]
+            )
+        )
+    width = max(len(row) for row in rows)
+    input_ids = np.full((len(rows), width), tokenizer.pad_token_id, dtype=np.int64)
+    attention_mask = np.zeros((len(rows), width), dtype=np.int64)
+    for index, row in enumerate(rows):
+        input_ids[index, : len(row)] = row
+        attention_mask[index, : len(row)] = 1
+    return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+
 def _validate_codes(codes: Sequence[str]) -> list[str]:
     if isinstance(codes, str):
         raise EmbeddingError("Pass a sequence of code strings, not a single string.")
@@ -191,6 +260,9 @@ class CodeEmbedder:
         """Token count per code, including special tokens, before truncation."""
         items = _validate_codes(codes)
         tokenizer = self._ensure_tokenizer()
+        if self.config.mode_token:
+            # <s> MODE </s> ... </s> adds four tokens around the code.
+            return [len(tokenizer.tokenize(code)) + 4 for code in items]
         encoded = tokenizer(items, add_special_tokens=True, truncation=False)
         return [len(ids) for ids in encoded["input_ids"]]
 
@@ -215,13 +287,23 @@ class CodeEmbedder:
 
         for start in range(0, len(items), size):
             batch = items[start : start + size]
-            inputs = tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=self.config.max_length,
-                return_tensors="pt",
-            )
+            if self.config.mode_token:
+                arrays = build_mode_inputs(
+                    tokenizer, batch, self.config.max_length, self.config.mode_token
+                )
+                inputs = {key: torch.as_tensor(value) for key, value in arrays.items()}
+            else:
+                inputs = tokenizer(
+                    batch,
+                    padding=True,
+                    truncation=True,
+                    max_length=self.config.max_length,
+                    return_tensors="pt",
+                )
+                inputs = {
+                    "input_ids": inputs["input_ids"],
+                    "attention_mask": inputs["attention_mask"],
+                }
             inputs = {key: value.to(self.config.device) for key, value in inputs.items()}
             with torch.no_grad():
                 outputs = model(**inputs)
