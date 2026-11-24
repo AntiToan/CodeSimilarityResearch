@@ -352,3 +352,103 @@ def test_ownership_verification_detects_forged_identity(
         assert result.expected_identity == forged_identity
     finally:
         release_temp(temp)
+
+def test_cleanup_owned_temp_removes_verified_temp_and_closes_fd(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        cleanup_owned_temp_file,
+        TempCleanupOutcome,
+    )
+
+    temp = create_owned_temp_file(
+        tmp_path / "output.bin"
+    )
+
+    assert temp.path.exists()
+
+    result = cleanup_owned_temp_file(temp)
+
+    assert result.outcome is TempCleanupOutcome.CLEANED
+    assert not temp.path.exists()
+
+    with pytest.raises(OSError):
+        os.fstat(temp.fd)
+
+
+def test_cleanup_owned_temp_when_temp_already_missing_closes_fd(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        cleanup_owned_temp_file,
+        TempCleanupOutcome,
+    )
+
+    temp = create_owned_temp_file(
+        tmp_path / "output.bin"
+    )
+
+    temp.path.unlink()
+
+    result = cleanup_owned_temp_file(temp)
+
+    assert result.outcome is TempCleanupOutcome.NOT_NEEDED
+    assert not result.file_removed
+    assert result.fd_closed
+
+    with pytest.raises(OSError):
+        os.fstat(temp.fd)
+
+
+def test_cleanup_owned_temp_identity_mismatch_does_not_remove_foreign_file(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        cleanup_owned_temp_file,
+        TempCleanupOutcome,
+    )
+
+    temp = create_owned_temp_file(
+        tmp_path / "output.bin"
+    )
+
+    temp.path.unlink()
+    temp.path.write_bytes(b"foreign data")
+
+    result = cleanup_owned_temp_file(temp)
+
+    assert result.outcome is TempCleanupOutcome.FAILED
+    assert not result.file_removed
+    assert result.fd_closed
+    assert temp.path.read_bytes() == b"foreign data"
+
+    with pytest.raises(OSError):
+        os.fstat(temp.fd)
+
+
+def test_cleanup_owned_temp_preserve_keeps_file_and_closes_fd(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        cleanup_owned_temp_file,
+        TempCleanupOutcome,
+    )
+
+    temp = create_owned_temp_file(
+        tmp_path / "output.bin"
+    )
+
+    result = cleanup_owned_temp_file(
+        temp,
+        preserve_temp=True,
+    )
+
+    assert result.outcome is TempCleanupOutcome.PRESERVED
+    assert not result.file_removed
+    assert result.fd_closed
+    assert temp.path.exists()
+
+    with pytest.raises(OSError):
+        os.fstat(temp.fd)
+
+    temp.path.unlink()

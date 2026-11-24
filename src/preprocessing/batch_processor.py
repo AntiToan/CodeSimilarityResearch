@@ -3,7 +3,11 @@ import time
 
 from collections import Counter
 from pathlib import Path
-
+from src.safety.safe_persistence import (
+    SafePersistence,
+    CollisionMode,
+    PersistenceStatus,
+)
 from src.preprocessing.source_reader import (
     SourceReadError,
     read_source_file,
@@ -37,17 +41,12 @@ def process_dataset(
         )
 
     output_path.mkdir(parents=True, exist_ok=True)
-
     source_files = sorted(input_path.rglob("*.txt"))
-
     start_time = time.perf_counter()
-
     successful_files = 0
     failed_files = 0
-
     encoding_counts = Counter()
     errors = []
-
     total_original_bytes = 0
     total_processed_bytes = 0
 
@@ -63,11 +62,21 @@ def process_dataset(
                 exist_ok=True,
             )
 
-            destination_file.write_text(
-                result["content"],
-                encoding="utf-8",
-                newline="\n",
+            persistence_result = SafePersistence.persist_bytes(
+                destination=destination_file.absolute(),
+                payload=result["content"].encode("utf-8"),
+                authorized_root=output_path.resolve(),
+                collision_mode=CollisionMode.REPLACE,
             )
+
+            if persistence_result.status not in (
+                PersistenceStatus.COMMITTED,
+                PersistenceStatus.COMMITTED_WITH_WARNINGS,
+            ):
+                raise OSError(
+                    persistence_result.primary_error
+                    or f"Persistence failed: {persistence_result.status.value}"
+                )
 
             successful_files += 1
             encoding_counts[result["encoding"]] += 1
@@ -102,15 +111,28 @@ def process_dataset(
     }
 
     report_path = output_path.parent / "preprocessing_report.json"
-
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with report_path.open("w", encoding="utf-8") as file:
-        json.dump(
-            report,
-            file,
-            indent=4,
-            ensure_ascii=False,
+    report_payload = json.dumps(
+        report,
+        indent=4,
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    report_result = SafePersistence.persist_bytes(
+        destination=report_path.absolute(),
+        payload=report_payload,
+        authorized_root=report_path.parent.resolve(),
+        collision_mode=CollisionMode.REPLACE,
+    )
+
+    if report_result.status not in (
+        PersistenceStatus.COMMITTED,
+        PersistenceStatus.COMMITTED_WITH_WARNINGS,
+    ):
+        raise OSError(
+            report_result.primary_error
+            or f"Report persistence failed: {report_result.status.value}"
         )
 
     print("\nPreprocessing completed!")

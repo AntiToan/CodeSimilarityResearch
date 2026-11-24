@@ -1,14 +1,15 @@
-
 from __future__ import annotations
-
 import csv
 import hashlib
-import os
-import tempfile
+import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
+from src.safety.safe_persistence import (
+    SafePersistence,
+    CollisionMode,
+    PersistenceStatus,
+)
 
 VARIANT_REGISTRY_COLUMNS = [
     "variant_id",
@@ -32,14 +33,11 @@ VALID_SPLITS = {"train", "validation", "test"}
 class VariantRegistryError(Exception):
     """Base exception for variant registry errors."""
 
-
 class VariantRegistrySchemaError(VariantRegistryError):
     """Invalid registry schema or record."""
 
-
 class DuplicateVariantError(VariantRegistryError):
     """Variant ID already exists in registry."""
-
 
 @dataclass(frozen=True)
 class VariantRegistryRecord:
@@ -194,35 +192,36 @@ class VariantRegistry:
             exist_ok=True,
         )
 
-        temp_path: Path | None = None
+        csv_buffer = io.StringIO(newline="")
 
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="",
-                dir=self.registry_path.parent,
-                delete=False,
-                suffix=".tmp",
-            ) as temp_file:
-                temp_path = Path(temp_file.name)
+        writer = csv.DictWriter(
+            csv_buffer,
+            fieldnames=VARIANT_REGISTRY_COLUMNS,
+        )
+        writer.writeheader()
+        writer.writerows(records)
 
-                writer = csv.DictWriter(
-                    temp_file,
-                    fieldnames=VARIANT_REGISTRY_COLUMNS,
+        payload = csv_buffer.getvalue().encode("utf-8")
+        csv_buffer.close()
+
+        persistence_result = SafePersistence.persist_bytes(
+            destination=self.registry_path.absolute(),
+            payload=payload,
+            authorized_root=self.registry_path.parent.resolve(),
+            collision_mode=CollisionMode.REPLACE,
+        )
+
+        if persistence_result.status not in (
+            PersistenceStatus.COMMITTED,
+            PersistenceStatus.COMMITTED_WITH_WARNINGS,
+        ):
+            raise OSError(
+                persistence_result.primary_error
+                or (
+                    "Variant registry persistence failed: "
+                    f"{persistence_result.status.value}"
                 )
-                writer.writeheader()
-                writer.writerows(records)
-
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-
-            os.replace(temp_path, self.registry_path)
-            temp_path = None
-
-        finally:
-            if temp_path is not None and temp_path.exists():
-                temp_path.unlink()
+            )
 
     def register(
         self,

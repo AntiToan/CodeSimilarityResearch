@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 import pytest
@@ -11,12 +10,16 @@ from src.safety.persistence_temp import (
     evaluate_pre_commit_gate,
     sync_owned_temp_file,
     write_owned_temp_bytes,
+    PreCommitDenialReason,
+    TempFileOwnership,
+    PreCommitGateResult,
 )
 from src.safety.persistence_temp import (
     verify_temp_ownership,
     OwnershipVerificationState
 )
-
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 def test_fail_if_exists_commit_succeeds(tmp_path):
     destination = tmp_path / "artifact.bin"
@@ -1134,3 +1137,1871 @@ def test_temp_content_mutation_after_sync_before_gate(
     finally:
         os.close(ownership.fd)
         ownership.path.unlink(missing_ok=True)
+
+
+def test_temp_truncation_after_sync_before_gate(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+
+    owned_payload = b"original-owned-payload"
+    truncated_payload = owned_payload[:5]
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            owned_payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        # Truncate the temp file after sync, before gate evaluation.
+        ownership.path.write_bytes(truncated_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(owned_payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        # Characterize whether stale bookkeeping is accepted.
+        assert gate.state is PreCommitGateState.PASSED
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == truncated_payload
+        assert len(destination.read_bytes()) < len(owned_payload)
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+
+def test_temp_extension_after_sync_before_gate(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+
+    owned_payload = b"original-owned-payload"
+    appended_payload = b"-attacker-extra"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            owned_payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        # Extend the file after sync, before gate evaluation.
+        with ownership.path.open("ab") as stream:
+            stream.write(appended_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(owned_payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        # Characterize whether stale byte-count evidence is accepted.
+        assert gate.state is PreCommitGateState.PASSED
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == owned_payload + appended_payload
+        assert len(destination.read_bytes()) > len(owned_payload)
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_committed_temp_cannot_be_reused_for_second_commit(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+    payload = b"transaction-payload"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        assert gate.state is PreCommitGateState.PASSED
+
+        first_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert first_result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == payload
+
+        # Replay the same ownership and stale gate.
+        second_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert second_result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert destination.read_bytes() == payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_committed_temp_replay_under_replace_does_not_mutate_destination(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+    payload = b"transaction-payload"
+    replacement_payload = b"replacement-content"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        assert gate.state is PreCommitGateState.PASSED
+
+        first_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert first_result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == payload
+
+        # Change destination so replay would cause visible data loss
+        # if the stale temp were accepted.
+        destination.write_bytes(replacement_payload)
+
+        second_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert second_result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert destination.read_bytes() == replacement_payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_fail_if_exists_temp_can_be_replayed_to_second_destination(
+    tmp_path,
+):
+    destination_a = tmp_path / "artifact-a.bin"
+    destination_b = tmp_path / "artifact-b.bin"
+    payload = b"transaction-payload"
+
+    ownership = create_owned_temp_file(destination_a)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        assert gate.state is PreCommitGateState.PASSED
+
+        first_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination_a,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert first_result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination_a.read_bytes() == payload
+
+        # Attempt replay to a different destination.
+        second_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination_b,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        # Ownership is consumed after the first successful commit.
+        # Cross-destination replay must be rejected.
+        assert second_result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination_b.exists()
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_replace_temp_cannot_be_replayed_to_second_destination(
+    tmp_path,
+):
+    destination_a = tmp_path / "artifact-a.bin"
+    destination_b = tmp_path / "artifact-b.bin"
+    payload = b"transaction-payload"
+
+    ownership = create_owned_temp_file(destination_a)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        assert gate.state is PreCommitGateState.PASSED
+
+        first_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination_a,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert first_result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination_a.read_bytes() == payload
+        assert not ownership.path.exists()
+
+        second_result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination_b,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert second_result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination_b.exists()
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_stale_gate_reuse_after_temp_content_mutation(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+
+    original_payload = b"original-transaction"
+    mutated_payload = b"changed--transaction"
+    assert len(original_payload) == len(mutated_payload)
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            original_payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(original_payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        assert gate.state is PreCommitGateState.PASSED
+
+        # Mutate content while retaining the same temp file identity.
+        ownership.path.write_bytes(mutated_payload)
+
+        # Reuse the stale gate without re-evaluation.
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == mutated_payload
+        assert destination.read_bytes() != original_payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_gate_passed_for_temp_a_can_be_reused_with_temp_b(
+    tmp_path,
+):
+    destination_a = tmp_path / "artifact-a.bin"
+    destination_b = tmp_path / "artifact-b.bin"
+
+    payload_a = b"payload-from-transaction-a"
+    payload_b = b"payload-from-transaction-b"
+
+    ownership_a = create_owned_temp_file(destination_a)
+    ownership_b = create_owned_temp_file(destination_b)
+
+    try:
+        bytes_written_a = write_owned_temp_bytes(
+            ownership_a,
+            payload_a,
+        )
+        sync_owned_temp_file(ownership_a)
+
+        gate_a = evaluate_pre_commit_gate(
+            ownership=ownership_a,
+            expected_bytes=len(payload_a),
+            bytes_written=bytes_written_a,
+            sync_completed=True,
+        )
+
+        assert gate_a.state is PreCommitGateState.PASSED
+
+        bytes_written_b = write_owned_temp_bytes(
+            ownership_b,
+            payload_b,
+        )
+        sync_owned_temp_file(ownership_b)
+
+        # Reuse transaction A's gate to commit transaction B.
+        result_b = commit_owned_temp_file(
+            ownership=ownership_b,
+            destination=destination_b,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate_a,
+        )
+
+        assert result_b.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination_b.read_bytes() == payload_b
+
+    finally:
+        os.close(ownership_a.fd)
+        os.close(ownership_b.fd)
+        ownership_a.path.unlink(missing_ok=True)
+        ownership_b.path.unlink(missing_ok=True)
+
+
+def test_gate_passed_for_temp_a_can_authorize_temp_b_with_different_size(
+    tmp_path,
+):
+    destination_a = tmp_path / "artifact-a.bin"
+    destination_b = tmp_path / "artifact-b.bin"
+
+    payload_a = b"short-payload"
+    payload_b = b"a substantially longer payload from transaction b"
+
+    assert len(payload_a) != len(payload_b)
+
+    ownership_a = create_owned_temp_file(destination_a)
+    ownership_b = create_owned_temp_file(destination_b)
+
+    try:
+        bytes_written_a = write_owned_temp_bytes(
+            ownership_a,
+            payload_a,
+        )
+        sync_owned_temp_file(ownership_a)
+
+        gate_a = evaluate_pre_commit_gate(
+            ownership=ownership_a,
+            expected_bytes=len(payload_a),
+            bytes_written=bytes_written_a,
+            sync_completed=True,
+        )
+
+        assert gate_a.state is PreCommitGateState.PASSED
+
+        bytes_written_b = write_owned_temp_bytes(
+            ownership_b,
+            payload_b,
+        )
+        sync_owned_temp_file(ownership_b)
+
+        result_b = commit_owned_temp_file(
+            ownership=ownership_b,
+            destination=destination_b,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate_a,
+        )
+
+        assert result_b.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination_b.read_bytes() == payload_b
+
+    finally:
+        os.close(ownership_a.fd)
+        os.close(ownership_b.fd)
+        ownership_a.path.unlink(missing_ok=True)
+        ownership_b.path.unlink(missing_ok=True)
+
+
+def test_passed_gate_from_synced_a_authorizes_unsynced_b(
+    tmp_path,
+):
+    destination_a = tmp_path / "artifact-a.bin"
+    destination_b = tmp_path / "artifact-b.bin"
+
+    payload_a = b"synced-transaction-a"
+    payload_b = b"unsynced-transaction-b"
+
+    ownership_a = create_owned_temp_file(destination_a)
+    ownership_b = create_owned_temp_file(destination_b)
+
+    try:
+        bytes_written_a = write_owned_temp_bytes(
+            ownership_a,
+            payload_a,
+        )
+        sync_owned_temp_file(ownership_a)
+
+        gate_a = evaluate_pre_commit_gate(
+            ownership=ownership_a,
+            expected_bytes=len(payload_a),
+            bytes_written=bytes_written_a,
+            sync_completed=True,
+        )
+
+        assert gate_a.state is PreCommitGateState.PASSED
+
+        # Write B, but deliberately do NOT sync B.
+        bytes_written_b = write_owned_temp_bytes(
+            ownership_b,
+            payload_b,
+        )
+        assert bytes_written_b == len(payload_b)
+
+        result_b = commit_owned_temp_file(
+            ownership=ownership_b,
+            destination=destination_b,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate_a,
+        )
+
+        assert result_b.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination_b.read_bytes() == payload_b
+
+    finally:
+        os.close(ownership_a.fd)
+        os.close(ownership_b.fd)
+        ownership_a.path.unlink(missing_ok=True)
+        ownership_b.path.unlink(missing_ok=True)
+
+
+def test_forged_pass_gate_authorizes_unsynced_temp_commit(
+    tmp_path,
+):
+    from src.safety.persistence_temp import PreCommitGateResult
+
+    destination = tmp_path / "artifact.bin"
+    payload = b"written-but-never-synced"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            payload,
+        )
+        assert bytes_written == len(payload)
+
+        # Forge a PASS gate directly. No evaluation and no sync.
+        forged_gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=forged_gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_gate_accepts_caller_claimed_sync_without_actual_sync(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+    payload = b"write-completed-but-no-fsync"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            payload,
+        )
+
+        # Deliberately skip sync_owned_temp_file().
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=bytes_written,
+            sync_completed=True,
+        )
+
+        assert gate.state is PreCommitGateState.PASSED
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_gate_accepts_falsely_claimed_write_completion(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+
+    actual_payload = b"short"
+    expected_payload = b"full-payload-expected"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        actual_bytes_written = write_owned_temp_bytes(
+            ownership,
+            actual_payload,
+        )
+        assert actual_bytes_written == len(actual_payload)
+        assert len(actual_payload) < len(expected_payload)
+
+        sync_owned_temp_file(ownership)
+
+        # Forge the byte-count claim to match expected size.
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(expected_payload),
+            bytes_written=len(expected_payload),
+            sync_completed=True,
+        )
+
+        assert gate.state is PreCommitGateState.PASSED
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == actual_payload
+        assert destination.read_bytes() != expected_payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_passed_gate_with_denial_reason_still_authorizes_commit(
+    tmp_path,
+):
+    from src.safety.persistence_temp import PreCommitGateResult
+
+    destination = tmp_path / "artifact.bin"
+    payload = b"gate-state-reason-conflict"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        bytes_written = write_owned_temp_bytes(
+            ownership,
+            payload,
+        )
+        sync_owned_temp_file(ownership)
+
+        contradictory_gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=PreCommitDenialReason.SYNC_NOT_COMPLETED,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=contradictory_gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+
+def test_forged_temp_ownership_can_commit_arbitrary_file(
+    tmp_path,
+):
+    from src.safety.persistence_temp import TempFileOwnership
+
+    source = tmp_path / "arbitrary-source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    payload = b"arbitrary-file-not-created-by-temp-helper"
+
+    fd = os.open(
+        source,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o600,
+    )
+
+    try:
+        os.write(fd, payload)
+        file_stat = os.fstat(fd)
+        identity = (file_stat.st_dev, file_stat.st_ino)
+
+        forged_ownership = TempFileOwnership(
+            transaction_id="forged-transaction",
+            path=source,
+            fd=fd,
+            identity=identity,
+            attempt=0,
+        )
+
+        gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=forged_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        os.close(fd)
+        source.unlink(missing_ok=True)
+
+
+def test_commit_accepts_forged_ownership_metadata(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        TempFileOwnership,
+        PreCommitGateResult,
+    )
+
+    source = tmp_path / "arbitrary-source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"invalid-ownership-metadata"
+
+    fd = os.open(
+        source,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o600,
+    )
+
+    try:
+        os.write(fd, payload)
+        file_stat = os.fstat(fd)
+        identity = (file_stat.st_dev, file_stat.st_ino)
+
+        forged_ownership = TempFileOwnership(
+            transaction_id="",
+            path=source,
+            fd=fd,
+            identity=identity,
+            attempt=-999,
+        )
+
+        forged_gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=forged_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=forged_gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        os.close(fd)
+        source.unlink(missing_ok=True)
+
+
+def test_commit_accepts_wrong_types_in_ownership_metadata(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        TempFileOwnership,
+        PreCommitGateResult,
+    )
+
+    source = tmp_path / "arbitrary-source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"wrong-metadata-types"
+
+    fd = os.open(
+        source,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o600,
+    )
+
+    try:
+        os.write(fd, payload)
+        file_stat = os.fstat(fd)
+        identity = (file_stat.st_dev, file_stat.st_ino)
+
+        forged_ownership = TempFileOwnership(
+            transaction_id=None,
+            path=source,
+            fd=fd,
+            identity=identity,
+            attempt="not-an-integer",
+        )
+
+        forged_gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=forged_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=forged_gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        os.close(fd)
+        source.unlink(missing_ok=True)
+
+
+def test_forged_ownership_path_and_fd_refer_to_different_files(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        TempFileOwnership,
+        PreCommitGateResult,
+    )
+
+    source_a = tmp_path / "source-a.bin"
+    source_b = tmp_path / "source-b.bin"
+    destination = tmp_path / "artifact.bin"
+
+    payload_a = b"file-a-path"
+    payload_b = b"file-b-descriptor"
+
+    fd_a = os.open(
+        source_a,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o600,
+    )
+    fd_b = os.open(
+        source_b,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o600,
+    )
+
+    try:
+        os.write(fd_a, payload_a)
+        os.write(fd_b, payload_b)
+
+        stat_a = os.fstat(fd_a)
+        identity_a = (stat_a.st_dev, stat_a.st_ino)
+
+        forged_ownership = TempFileOwnership(
+            transaction_id="forged-split-identity",
+            path=source_a,
+            fd=fd_b,
+            identity=identity_a,
+            attempt=0,
+        )
+
+        forged_gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=forged_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=forged_gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        os.close(fd_a)
+        os.close(fd_b)
+        source_a.unlink(missing_ok=True)
+        source_b.unlink(missing_ok=True)
+
+
+def test_forged_identity_tuple_blocks_commit(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        TempFileOwnership,
+        PreCommitGateResult,
+    )
+
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"identity-tuple-forgery"
+
+    fd = os.open(
+        source,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o600,
+    )
+
+    try:
+        os.write(fd, payload)
+
+        file_stat = os.fstat(fd)
+        real_identity = (file_stat.st_dev, file_stat.st_ino)
+        forged_identity = (
+            real_identity[0],
+            real_identity[1] + 1,
+        )
+
+        assert forged_identity != real_identity
+
+        forged_ownership = TempFileOwnership(
+            transaction_id="forged-identity",
+            path=source,
+            fd=fd,
+            identity=forged_identity,
+            attempt=0,
+        )
+
+        forged_gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=forged_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=forged_gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        os.close(fd)
+        source.unlink(missing_ok=True)
+
+
+def test_invalid_descriptor_blocks_commit(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        TempFileOwnership,
+        PreCommitGateResult,
+    )
+
+    destination = tmp_path / "artifact.bin"
+    payload = b"invalid-descriptor-test"
+
+    ownership = create_owned_temp_file(destination)
+
+    try:
+        write_owned_temp_bytes(ownership, payload)
+        sync_owned_temp_file(ownership)
+
+        forged_ownership = TempFileOwnership(
+            transaction_id=ownership.transaction_id,
+            path=ownership.path,
+            fd=-1,
+            identity=ownership.identity,
+            attempt=ownership.attempt,
+        )
+
+        forged_gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=forged_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=forged_gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+def test_closed_fd_before_commit_blocks_commit(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"closed-fd-before-commit"
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=len(payload),
+            sync_completed=True,
+        )
+
+        os.close(ownership.fd)
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        source.unlink(missing_ok=True)
+
+def test_closed_fd_commit_returns_controlled_outcome(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"closed-fd-controlled-outcome"
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=len(payload),
+            sync_completed=True,
+        )
+
+        os.close(ownership.fd)
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        source.unlink(missing_ok=True)
+
+def test_commit_destination_directory_returns_not_committed(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"destination-is-directory"
+
+    destination.mkdir()
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=len(payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert destination.is_dir()
+        assert not (destination / source.name).exists()
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_fail_if_exists_preserves_existing_hardlink_destination(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    original = tmp_path / "original.bin"
+
+    original_payload = b"hardlink-original"
+    commit_payload = b"new-commit-payload"
+
+    original.write_bytes(original_payload)
+
+    try:
+        os.link(original, destination)
+    except OSError as exc:
+        pytest.skip(f"Hard link unavailable: {exc}")
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, commit_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(commit_payload),
+            bytes_written=len(commit_payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert original.read_bytes() == original_payload
+        assert destination.read_bytes() == original_payload
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_replace_destination_hardlink_preserves_original_inode(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    original = tmp_path / "original.bin"
+
+    original_payload = b"hardlink-original"
+    replacement_payload = b"replacement-content"
+
+    original.write_bytes(original_payload)
+
+    try:
+        os.link(original, destination)
+    except OSError as exc:
+        pytest.skip(f"Hard link unavailable: {exc}")
+
+    original_identity = (
+        original.stat().st_dev,
+        original.stat().st_ino,
+    )
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, replacement_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(replacement_payload),
+            bytes_written=len(replacement_payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == replacement_payload
+        assert original.read_bytes() == original_payload
+
+        assert (
+            original.stat().st_dev,
+            original.stat().st_ino,
+        ) == original_identity
+
+        assert (
+            destination.stat().st_dev,
+            destination.stat().st_ino,
+        ) != original_identity
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_replace_readonly_destination_behavior(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    old_payload = b"readonly-old"
+    new_payload = b"readonly-new"
+
+    destination.write_bytes(old_payload)
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, new_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(new_payload),
+            bytes_written=len(new_payload),
+            sync_completed=True,
+        )
+
+        destination.chmod(0o444)
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome in {
+            AtomicCommitOutcome.COMMITTED,
+            AtomicCommitOutcome.OUTCOME_UNKNOWN,
+        }
+
+        if result.outcome is AtomicCommitOutcome.COMMITTED:
+            assert destination.read_bytes() == new_payload
+        else:
+            assert destination.exists()
+
+    finally:
+        destination.chmod(0o666)
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_replace_commit_destination_exact_content(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    old_payload = b"old-content-must-be-replaced"
+    new_payload = b"new-content-exactly-once"
+
+    destination.write_bytes(old_payload)
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, new_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(new_payload),
+            bytes_written=len(new_payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == new_payload
+        assert destination.stat().st_size == len(new_payload
+
+        )
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_replace_commit_empty_payload(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    destination.write_bytes(b"old-content")
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=0,
+            bytes_written=0,
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.exists()
+        assert destination.read_bytes() == b""
+        assert destination.stat().st_size == 0
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_fail_if_exists_empty_payload_preserves_destination(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    existing_payload = b"existing-data"
+    destination.write_bytes(existing_payload)
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=0,
+            bytes_written=0,
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert destination.read_bytes() == existing_payload
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_replace_commit_large_payload_integrity(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    old_payload = b"old"
+    new_payload = b"L" * (8 * 1024 * 1024)
+
+    destination.write_bytes(old_payload)
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, new_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(new_payload),
+            bytes_written=len(new_payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.stat().st_size == len(new_payload)
+        assert destination.read_bytes() == new_payload
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_fail_if_exists_large_payload_preserves_destination(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    existing_payload = b"original-destination"
+    new_payload = b"L" * (8 * 1024 * 1024)
+
+    destination.write_bytes(existing_payload)
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, new_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(new_payload),
+            bytes_written=len(new_payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert destination.read_bytes() == existing_payload
+        assert destination.stat().st_size == len(existing_payload
+
+        )
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_replace_commit_when_destination_is_temp_path(
+    tmp_path,
+):
+    source = tmp_path / "artifact.bin"
+    payload = b"alias-destination-payload"
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=len(payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=ownership.path,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome in {
+            AtomicCommitOutcome.COMMITTED,
+            AtomicCommitOutcome.OUTCOME_UNKNOWN,
+        }
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_commit_rejects_invalid_mode(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        payload = b"invalid-mode-test"
+        os.write(ownership.fd, payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=len(payload),
+            sync_completed=True,
+        )
+
+        with pytest.raises((ValueError, TypeError)):
+            commit_owned_temp_file(
+                ownership=ownership,
+                destination=destination,
+                mode="FORCE_OVERWRITE",
+                gate=gate,
+            )
+
+        assert not destination.exists()
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_commit_rejects_relative_destination(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    payload = b"relative-destination-test"
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=len(payload),
+            sync_completed=True,
+        )
+
+        relative_destination = Path("relative_artifact.bin")
+
+        with pytest.raises(ValueError):
+            commit_owned_temp_file(
+                ownership=ownership,
+                destination=relative_destination,
+                mode=AtomicCommitMode.REPLACE,
+                gate=gate,
+            )
+
+        assert not relative_destination.exists()
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_replace_commit_replaces_destination_symlink_not_target(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    target = tmp_path / "protected.bin"
+
+    protected_payload = b"protected-original"
+    new_payload = b"replacement-payload"
+
+    target.write_bytes(protected_payload)
+
+    try:
+        destination.symlink_to(target)
+
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlink capability unavailable: {exc}")
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, new_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(new_payload),
+            bytes_written=len(new_payload),
+            sync_completed=True,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.COMMITTED
+        assert destination.read_bytes() == new_payload
+        assert not destination.is_symlink()
+
+        # Symlink target must remain untouched.
+        assert target.read_bytes() == protected_payload
+
+    finally:
+        os.close(ownership.fd)
+        source.unlink(missing_ok=True)
+
+def test_commit_rejects_temp_path_removed_after_gate(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"temp-path-removed-after-gate"
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(payload),
+            bytes_written=len(payload),
+            sync_completed=True,
+        )
+
+        ownership.path.unlink()
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+def test_commit_rejects_temp_path_substitution_after_gate(
+    tmp_path,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "artifact.bin"
+
+    original_payload = b"legitimate-original"
+    attacker_payload = b"attacker-replacement"
+
+    ownership = create_owned_temp_file(source)
+
+    try:
+        os.write(ownership.fd, original_payload)
+
+        gate = evaluate_pre_commit_gate(
+            ownership=ownership,
+            expected_bytes=len(original_payload),
+            bytes_written=len(original_payload),
+            sync_completed=True,
+        )
+
+        ownership.path.unlink()
+        ownership.path.write_bytes(attacker_payload)
+
+        result = commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert not destination.exists()
+        assert ownership.path.read_bytes() == attacker_payload
+
+    finally:
+        os.close(ownership.fd)
+        ownership.path.unlink(missing_ok=True)
+
+def test_r1_registry_rejects_forged_temp_ownership(
+    tmp_path,
+):
+    from src.safety.persistence_temp import TempFileOwnership
+
+    source = tmp_path / "forged-source.bin"
+    destination = tmp_path / "artifact.bin"
+    payload = b"forged-payload"
+
+    fd = os.open(
+        source,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR,
+        0o600,
+    )
+
+    try:
+        os.write(fd, payload)
+        file_stat = os.fstat(fd)
+        identity = (file_stat.st_dev, file_stat.st_ino)
+
+        forged_ownership = TempFileOwnership(
+            transaction_id="forged-r1-transaction",
+            path=source,
+            fd=fd,
+            identity=identity,
+            attempt=0,
+        )
+
+        gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=forged_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert destination.exists() is False
+        assert source.read_bytes() == payload
+
+    finally:
+        os.close(fd)
+
+def test_r1_registry_rejects_cloned_genuine_ownership(
+    tmp_path,
+):
+    from src.safety.persistence_temp import TempFileOwnership
+
+    destination = tmp_path / "artifact.bin"
+    payload = b"genuine-ownership-clone-test"
+
+    genuine = create_owned_temp_file(destination)
+
+    try:
+        os.write(genuine.fd, payload)
+
+        cloned_ownership = TempFileOwnership(
+            transaction_id=genuine.transaction_id,
+            path=genuine.path,
+            fd=genuine.fd,
+            identity=genuine.identity,
+            attempt=genuine.attempt,
+        )
+
+        gate = PreCommitGateResult(
+            state=PreCommitGateState.PASSED,
+            reason=None,
+        )
+
+        result = commit_owned_temp_file(
+            ownership=cloned_ownership,
+            destination=destination,
+            mode=AtomicCommitMode.FAIL_IF_EXISTS,
+            gate=gate,
+        )
+
+        assert result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+        assert destination.exists() is False
+        assert genuine.path.read_bytes() == payload
+
+    finally:
+        os.close(genuine.fd)
+
+def test_r1_registry_rejects_replay_after_successful_commit(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        TempOwnershipLifecycle,
+        _TEMP_OWNERSHIP_REGISTRY,
+    )
+
+    destination = tmp_path / "artifact.bin"
+
+    ownership = create_owned_temp_file(destination)
+    payload = b"replay-protection"
+
+    write_owned_temp_bytes(ownership, payload)
+    sync_owned_temp_file(ownership)
+
+    gate = evaluate_pre_commit_gate(
+        ownership=ownership,
+        expected_bytes=len(payload),
+        bytes_written=len(payload),
+        sync_completed=True,
+    )
+
+    first_result = commit_owned_temp_file(
+        ownership=ownership,
+        destination=destination,
+        mode=AtomicCommitMode.FAIL_IF_EXISTS,
+        gate=gate,
+    )
+
+    assert first_result.outcome is AtomicCommitOutcome.COMMITTED
+    assert destination.read_bytes() == payload
+
+    record = _TEMP_OWNERSHIP_REGISTRY[
+        ownership.transaction_id
+    ]
+    assert record.lifecycle is TempOwnershipLifecycle.CONSUMED
+
+    second_destination = tmp_path / "replay.bin"
+
+    second_result = commit_owned_temp_file(
+        ownership=ownership,
+        destination=second_destination,
+        mode=AtomicCommitMode.FAIL_IF_EXISTS,
+        gate=gate,
+    )
+
+    assert second_result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+    assert not second_destination.exists()
+    assert destination.read_bytes() == payload
+
+def test_r1_registry_rejects_replay_replace_after_successful_commit(
+    tmp_path,
+):
+    destination = tmp_path / "artifact.bin"
+
+    ownership = create_owned_temp_file(destination)
+    payload = b"original-committed-content"
+
+    write_owned_temp_bytes(ownership, payload)
+    sync_owned_temp_file(ownership)
+
+    gate = evaluate_pre_commit_gate(
+        ownership=ownership,
+        expected_bytes=len(payload),
+        bytes_written=len(payload),
+        sync_completed=True,
+    )
+
+    first_result = commit_owned_temp_file(
+        ownership=ownership,
+        destination=destination,
+        mode=AtomicCommitMode.REPLACE,
+        gate=gate,
+    )
+
+    assert first_result.outcome is AtomicCommitOutcome.COMMITTED
+    assert destination.read_bytes() == payload
+
+    second_destination = tmp_path / "replay.bin"
+    second_destination.write_bytes(b"protected-content")
+
+    second_result = commit_owned_temp_file(
+        ownership=ownership,
+        destination=second_destination,
+        mode=AtomicCommitMode.REPLACE,
+        gate=gate,
+    )
+
+    assert second_result.outcome is AtomicCommitOutcome.NOT_COMMITTED
+    assert second_destination.read_bytes() == b"protected-content"
+    assert destination.read_bytes() == payload
+
+def test_r1_concurrent_commit_same_ownership(
+    tmp_path,
+):
+    from src.safety.persistence_temp import (
+        AtomicCommitMode,
+        AtomicCommitOutcome,
+        commit_owned_temp_file,
+        create_owned_temp_file,
+    )
+
+    destination = tmp_path / "artifact.bin"
+    ownership = create_owned_temp_file(destination)
+    payload = b"concurrent-payload"
+
+    gate = evaluate_pre_commit_gate(
+        ownership=ownership,
+        expected_bytes=len(payload),
+        bytes_written=len(payload),
+        sync_completed=True,
+    )
+
+    with open(ownership.path, "wb") as f:
+        f.write(payload)
+
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait()
+        return commit_owned_temp_file(
+            ownership=ownership,
+            destination=destination,
+            mode=AtomicCommitMode.REPLACE,
+            gate=gate,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: worker(), range(2)))
+
+    assert sum(
+        result.outcome is AtomicCommitOutcome.COMMITTED
+        for result in results
+    ) == 1
