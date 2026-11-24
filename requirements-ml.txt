@@ -3,3 +3,4 @@
 # then: python -m pip install -r requirements-ml.txt
 -r requirements.txt
 transformers==4.46.3
+datasets==5.0.1   # scripts/measure_truncation.py
