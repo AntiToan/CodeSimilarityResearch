@@ -182,3 +182,19 @@ def test_metrics_are_deterministic():
     scores = np.linspace(0, 1, 11)
     labels = [0] * 5 + [1] * 6
     assert select_threshold(labels, scores) == select_threshold(labels, scores)
+
+
+def test_utf8_console_prints_vietnamese_on_a_cp1252_stream(monkeypatch):
+    import io
+    import sys
+
+    from src.models.experiment import utf8_console
+
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="cp1252", newline="\n")
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", stream)
+    utf8_console()
+    print("Saved: D:/Sv Nghiên Cứu Khoa Học/run")
+    stream.flush()
+    assert buffer.getvalue().decode("utf-8") == "Saved: D:/Sv Nghiên Cứu Khoa Học/run\n"

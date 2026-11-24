@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.models.experiment import ExperimentError, planned_run_dir  # noqa: E402
+from src.models.experiment import ExperimentError, planned_run_dir, utf8_console  # noqa: E402
 from src.models.toy_export import write_toy_export  # noqa: E402
 
 
@@ -36,6 +36,7 @@ def run(script: str, *args: str, expect_ok: bool = True) -> None:
 
 
 def main() -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description="Phase II smoke test on toy data")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--model", default="microsoft/codebert-base")

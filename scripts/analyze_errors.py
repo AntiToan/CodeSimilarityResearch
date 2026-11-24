@@ -19,11 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.evaluation.error_analysis import analyze_errors, error_rows  # noqa: E402
+from src.models.experiment import utf8_console  # noqa: E402
 
 DEFAULT_GROUPS = ["pair_type", "generation_method", "transformation_type", "problem_a_id"]
 
 
 def main() -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description="FP/FN analysis of an evaluation run (II.8)")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--top", type=int, default=50)

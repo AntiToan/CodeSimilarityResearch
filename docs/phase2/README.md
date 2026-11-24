@@ -2,7 +2,7 @@
 
 ## Trạng thái
 
-**Code của Phase II đã đủ cho cả 8 checkpoint**, đã kiểm tra bằng test và chạy thử đầu cuối trên dữ liệu giả. **Chưa có kết quả nghiên cứu nào.** Huấn luyện thật, chọn siêu tham số và đánh giá chỉ chạy khi dataset pairs đã freeze (luật 16). Hiện Phase I chưa có bộ xuất `pair_index.csv` (audit I.9 ghi là chưa cài).
+**Code của Phase II đã đủ cho cả 8 checkpoint**, đã kiểm tra bằng test và chạy thử đầu cuối trên dữ liệu giả. **Chưa có kết quả nghiên cứu nào.** Huấn luyện thật, chọn siêu tham số và đánh giá chỉ chạy khi dataset pairs đã freeze (luật 16). Phase I đã có bộ xuất cặp (`src/data/final_dataset_exporter.py`, commit `f32145f`), và bộ đọc của Phase II đã được thử với đúng output của nó. Tuy vậy, bộ xuất chưa được nối vào pipeline chạy thật, nên chưa có bản dataset freeze nào.
 
 | Checkpoint | Đã có | Còn chờ dataset freeze | File |
 |---|---|---|---|
@@ -14,7 +14,7 @@
 | II.6 | Tên checkpoint, chỉ giữ bản tốt nhất, lưu ngưỡng và cách mã hóa trong checkpoint | — | `src/models/train.py` |
 | II.7 | Đánh giá zero-shot và fine-tune: P, R, F1, ROC-AUC, AP, thời gian chạy | Chạy trên validation | `scripts/evaluate_encoder.py`, `src/models/pair_scoring.py` |
 | II.8 | Bảng FP/FN theo loại cặp, loại biến đổi, bài toán | Phân tích trên kết quả thật | `src/evaluation/error_analysis.py`, `scripts/analyze_errors.py` |
-| Dữ liệu | Đọc bản export của Phase I, kiểm tra fail-closed | Khớp với bộ xuất thật của I.9 | `src/models/pair_dataset.py` |
+| Dữ liệu | Đọc bản export của Phase I, kiểm tra fail-closed; đã thử với output của `FinalDatasetExporter` | Chạy trên bản export thật đã freeze | `src/models/pair_dataset.py` |
 
 ## Quy trình sau khi dataset freeze
 
@@ -52,13 +52,19 @@ Bộ đọc `src/models/pair_dataset.py` theo đúng thiết kế trong `docs/pa
 
 | File | Nội dung cần có |
 |---|---|
-| `data/pairs/pair_index.csv` | `pair_id, sample_a_id, sample_b_id, label, pair_type, split, problem_a_id, problem_b_id, generation_method` (cột khác được giữ lại để phân tích) |
-| `data/pairs/splits/{train,validation,test}.csv` | cột `pair_id` |
+| `data/pairs/pair_index.csv` | File CSV do `FinalDatasetExporter.export_csv` ghi ra. Cần các cột `pair_id, sample_a_id, sample_b_id, label, pair_type, split, problem_a_id, problem_b_id, generation_method`; cột khác (`source_a_id`, `created_seed`...) được giữ lại để phân tích |
+| `data/pairs/splits/{train,validation,test}.csv` | Không bắt buộc. Một cột `pair_id` |
 | `data/processed/poj104/metadata/samples.csv` | `sample_id, source_path, status`; `source_path` tương đối so với `data/processed` |
 | `data/processed/poj104/metadata/source_splits.csv` | `sample_id, split` |
 | `data/processed/poj104/metadata/variant_registry.csv` | `variant_id, split, transformation_type, validation_status, source_path, source_hash` |
 
 Đọc dữ liệu theo nguyên tắc fail-closed: thiếu cột, thiếu file, sai hash, cặp lặp, split lệch, đường dẫn ra ngoài thư mục, bài lỗi hoặc biến thể không PASS đều làm dừng chương trình.
+
+**Tên file và split:**
+- Bộ xuất cho người gọi tự đặt tên file. Nếu không ghi vào `data/pairs/pair_index.csv`, thêm khóa `"pair_index_csv": "<đường dẫn>"` vào mục `data` của config.
+- Split của mỗi cặp lấy từ một trong hai nguồn. Nguồn đã dùng được ghi vào `dataset.split_source` trong báo cáo của mỗi lần chạy.
+  - `split_files`: có thư mục `data/pairs/splits/`. Khi đó cả 3 file split phải có và khớp hoàn toàn với cột `split`.
+  - `index_column`: không có thư mục đó (bộ xuất hiện tại không tạo). Khi đó dùng cột `split` của file cặp.
 
 **Lưu ý cho I.9:**
 - `variant_registry.csv` hiện lưu **đường dẫn tuyệt đối** của máy chạy pipeline. Đem dataset sang Colab thì các đường dẫn đó không còn đúng.

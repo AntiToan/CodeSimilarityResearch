@@ -1,12 +1,18 @@
 """Tests for reading the frozen Phase I export (fail-closed) and for pair scoring."""
 
 import csv
+import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from src.data.final_dataset_exporter import FinalDatasetExporter
+from src.data.pair_models import PairRecord, PairSplit, PairType
 from src.models.pair_dataset import (
+    INDEX_COLUMN,
+    SPLIT_FILES,
     CodeStore,
     DataPaths,
     PairDatasetError,
@@ -167,6 +173,78 @@ def test_data_paths_validation(tmp_path):
     with pytest.raises(PairDatasetError, match="together"):
         DataPaths.from_dict({"pairs_dir": "a", "samples_csv": "b", "samples_root": "c",
                              "variants_csv": "d"})
+
+
+# ---------- split source: split files or the index's split column ----------
+
+def pair_ids(rows):
+    return sorted(row.pair_id for row in rows)
+
+
+def test_without_split_files_the_index_column_is_used(export):
+    with_files = {split: pair_ids(load_split(export, split)[0])
+                  for split in ("train", "validation", "test")}
+    assert export.split_source == SPLIT_FILES
+    shutil.rmtree(export.pairs_dir / "splits")
+    assert export.split_source == INDEX_COLUMN
+    for split, expected in with_files.items():
+        assert pair_ids(load_split(export, split)[0]) == expected
+    assert set(fingerprint(export, ["train"])) == {
+        "pair_index.csv", "samples.csv", "variant_registry.csv", "source_splits.csv"}
+
+
+def test_split_directory_with_a_missing_file_fails(export):
+    (export.pairs_dir / "splits" / "test.csv").unlink()
+    with pytest.raises(PairDatasetError, match="Missing file"):
+        load_split_pairs(export.pairs_dir, "test")
+
+
+def test_index_column_split_still_needs_both_labels(export):
+    shutil.rmtree(export.pairs_dir / "splits")
+
+    def drop_test_negatives(rows):
+        rows[:] = [r for r in rows if not (r["split"] == "test" and r["label"] == "0")]
+
+    edit_csv(export.pairs_dir / "pair_index.csv", drop_test_negatives)
+    with pytest.raises(PairDatasetError, match="lacks positive or negative"):
+        load_split_pairs(export.pairs_dir, "test")
+
+
+def to_pair_record(row: dict) -> PairRecord:
+    return PairRecord(
+        pair_id=row["pair_id"], sample_a_id=row["sample_a_id"], sample_b_id=row["sample_b_id"],
+        label=int(row["label"]), pair_type=PairType(row["pair_type"]),
+        split=PairSplit(row["split"]), source_a_id=row["source_a_id"],
+        source_b_id=row["source_b_id"], problem_a_id=row["problem_a_id"],
+        problem_b_id=row["problem_b_id"], generation_method=row["generation_method"],
+        created_seed=int(row["created_seed"]),
+    )
+
+
+def test_reads_the_csv_written_by_the_phase1_exporter(export):
+    """The I.8 exporter writes one CSV (any name) and no split files."""
+    records = [to_pair_record(row) for row in read_rows(export.pairs_dir / "pair_index.csv")]
+    exported = export.pairs_dir / "final_dataset.csv"
+    exported.write_bytes(FinalDatasetExporter.serialize_pairs(records).encode("utf-8"))
+    expected = {split: pair_ids(load_split(export, split)[0])
+                for split in ("train", "validation", "test")}
+    (export.pairs_dir / "pair_index.csv").unlink()
+    shutil.rmtree(export.pairs_dir / "splits")
+
+    paths = replace(export, pair_index_csv=exported)
+    for split, ids in expected.items():
+        rows, codes = load_split(paths, split)
+        assert pair_ids(rows) == ids
+        assert all(row.extra["created_seed"] == "42" for row in rows)
+        assert set(codes) == {s for row in rows for s in (row.sample_a_id, row.sample_b_id)}
+    assert "final_dataset.csv" in fingerprint(paths, ["train"])
+
+
+def test_pair_index_csv_alone_sets_pairs_dir(tmp_path):
+    paths = DataPaths.from_dict({"pair_index_csv": "out/final.csv", "samples_csv": "s.csv",
+                                 "samples_root": "p"}, base_dir=tmp_path)
+    assert paths.pairs_dir == tmp_path / "out"
+    assert paths.index_csv == tmp_path / "out" / "final.csv"
 
 
 # ---------- pair scoring ----------

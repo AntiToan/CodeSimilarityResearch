@@ -24,6 +24,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.algorithms.codebert import CodeEmbedder, EmbeddingConfig  # noqa: E402
+from src.models.experiment import utf8_console  # noqa: E402
 
 DEFAULT_DATASET = "google/code_x_glue_cc_clone_detection_poj104"
 
@@ -63,6 +64,7 @@ def git_commit() -> str | None:
 
 
 def main() -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--model", default="microsoft/codebert-base")

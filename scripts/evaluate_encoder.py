@@ -35,6 +35,7 @@ from src.models.experiment import (  # noqa: E402
     read_validation_threshold,
     resolve_dataset_version,
     utc_now,
+    utf8_console,
 )
 
 FIRST_COLUMNS = [
@@ -44,6 +45,7 @@ FIRST_COLUMNS = [
 
 
 def main() -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description="Evaluate an encoder on pairs (II.7)")
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-id", required=True)
@@ -119,7 +121,11 @@ def main() -> int:
         "model": args.checkpoint or embedding.model_name,
         "embedding": asdict(embedding),
         "preprocessing_mode": "raw",
-        "dataset": {"version": dataset_version, "fingerprint": fingerprint(paths, [args.split])},
+        "dataset": {
+            "version": dataset_version,
+            "fingerprint": fingerprint(paths, [args.split]),
+            "split_source": paths.split_source,
+        },
         "threshold": threshold,
         "threshold_selected_on": "validation",
         "threshold_source": threshold_source,

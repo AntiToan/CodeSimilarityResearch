@@ -6,6 +6,7 @@ import json
 import platform
 import re
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,6 +17,18 @@ TEST_LOG_NAME = "test_runs.log"
 
 class ExperimentError(ValueError):
     """Raised when a run would break a project rule (frozen data, no overwrite, test log)."""
+
+
+def utf8_console() -> None:
+    """Write stdout/stderr as UTF-8 so Vietnamese paths print on Windows.
+
+    A redirected Windows console defaults to cp1252, and printing a path such
+    as "Sv Nghiên Cứu Khoa Học" would crash a script after its results were
+    already written.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def load_config(path: str | Path) -> dict[str, Any]:

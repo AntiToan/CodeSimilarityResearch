@@ -3,14 +3,23 @@
 Expected layout (docs/pair_design_merged_v3.md, "Output Structure"):
 
     data/pairs/pair_index.csv                         master pair records
-    data/pairs/splits/<split>.csv                     one column: pair_id
+    data/pairs/splits/<split>.csv                     optional; one column: pair_id
     data/processed/poj104/metadata/samples.csv        originals; source_path is
                                                       relative to data/processed
-    data/processed/poj104/metadata/variants.csv       variant registry
+    data/processed/poj104/metadata/variant_registry.csv  variant registry
     data/processed/poj104/metadata/source_splits.csv  split of every original
 
-The final exporter of I.9 is not implemented yet; if its column names or
-path conventions differ, adjust them here (one place).
+The pair index is the CSV written by ``src.data.final_dataset_exporter``
+(I.8): one file, columns ``PAIR_EXPORT_FIELDS``, the split in its ``split``
+column. Its location is ``data.pair_index_csv`` in the config, or
+``<pairs_dir>/pair_index.csv`` by default.
+
+Split membership comes from one of two sources, recorded in run reports:
+
+- ``split_files``: ``<pairs_dir>/splits/`` exists, so every split file must
+  exist and agree exactly with the index's ``split`` column;
+- ``index_column``: no ``splits/`` directory (the I.8 exporter writes none),
+  so the ``split`` column of the index is used.
 
 Fail-closed (CLAUDE.md, rule 8): a missing reference, unreadable file, hash
 mismatch, split mismatch or inconsistent index raises ``PairDatasetError``.
@@ -68,6 +77,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+SPLIT_FILES = "split_files"
+INDEX_COLUMN = "index_column"
+
+
+def split_source(pairs_dir: str | Path) -> str:
+    """``split_files`` when ``<pairs_dir>/splits`` exists, else ``index_column``."""
+    return SPLIT_FILES if (Path(pairs_dir) / "splits").is_dir() else INDEX_COLUMN
+
+
 @dataclass(frozen=True)
 class DataPaths:
     pairs_dir: Path
@@ -76,6 +94,7 @@ class DataPaths:
     variants_csv: Path | None = None
     variants_root: Path | None = None
     source_splits_csv: Path | None = None
+    pair_index_csv: Path | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], base_dir: str | Path = ".") -> "DataPaths":
@@ -88,19 +107,34 @@ class DataPaths:
         for name in allowed:
             raw = data.get(name)
             values[name] = None if raw in (None, "") else (base / str(raw))
-        for name in ("pairs_dir", "samples_csv", "samples_root"):
+        if values["pairs_dir"] is None and values["pair_index_csv"] is not None:
+            values["pairs_dir"] = values["pair_index_csv"].parent
+        if values["pairs_dir"] is None:
+            raise PairDatasetError("Data path 'pairs_dir' or 'pair_index_csv' is required.")
+        for name in ("samples_csv", "samples_root"):
             if values[name] is None:
                 raise PairDatasetError(f"Data path {name!r} is required.")
         if (values["variants_csv"] is None) != (values["variants_root"] is None):
             raise PairDatasetError("variants_csv and variants_root must be given together.")
         return cls(**values)  # type: ignore[arg-type]
 
+    @property
+    def index_csv(self) -> Path:
+        return self.pair_index_csv or self.pairs_dir / "pair_index.csv"
+
+    @property
+    def split_source(self) -> str:
+        return split_source(self.pairs_dir)
+
     def files_to_fingerprint(self, splits: Sequence[str]) -> dict[str, Path]:
-        files = {"pair_index.csv": self.pairs_dir / "pair_index.csv"}
-        for split in splits:
-            files[f"splits/{split}.csv"] = self.pairs_dir / "splits" / f"{split}.csv"
+        files = {self.index_csv.name: self.index_csv}
+        if self.split_source == SPLIT_FILES:
+            for split in splits:
+                files[f"splits/{split}.csv"] = self.pairs_dir / "splits" / f"{split}.csv"
         for path in (self.samples_csv, self.variants_csv, self.source_splits_csv):
             if path is not None:
+                if path.name in files:
+                    raise PairDatasetError(f"Two dataset files share the name {path.name!r}.")
                 files[path.name] = path
         return files
 
@@ -167,12 +201,17 @@ def _pair_row(raw: Mapping[str, str], source: Path) -> PairRow:
     )
 
 
-def load_split_pairs(pairs_dir: str | Path, split: str) -> list[PairRow]:
-    """Pairs of one split, in split-file order, cross-checked against the master index."""
+def load_split_pairs(
+    pairs_dir: str | Path, split: str, index_csv: str | Path | None = None
+) -> list[PairRow]:
+    """Pairs of one split, checked against the master index.
+
+    Order: split-file order when ``<pairs_dir>/splits`` exists, else index order.
+    """
     if split not in SPLITS:
         raise PairDatasetError(f"Unknown split {split!r}; expected one of {SPLITS}.")
     root = Path(pairs_dir)
-    index_path = root / "pair_index.csv"
+    index_path = Path(index_csv) if index_csv is not None else root / "pair_index.csv"
     columns, index_rows = _read_csv(index_path)
     _require_columns(index_path, columns, REQUIRED_PAIR_COLUMNS)
 
@@ -188,6 +227,10 @@ def load_split_pairs(pairs_dir: str | Path, split: str) -> list[PairRow]:
         reverse_keys.add(key)  # type: ignore[arg-type]
         index[row.pair_id] = row
 
+    if split_source(root) == INDEX_COLUMN:
+        selected = [row for row in index.values() if row.split == split]
+        return _check_selected(split, selected)
+
     split_path = root / "splits" / f"{split}.csv"
     split_columns, split_rows = _read_csv(split_path)
     _require_columns(split_path, split_columns, ("pair_id",))
@@ -199,7 +242,7 @@ def load_split_pairs(pairs_dir: str | Path, split: str) -> list[PairRow]:
     for pair_id in ids:
         row = index.get(pair_id)
         if row is None:
-            raise PairDatasetError(f"{split_path}: pair {pair_id} is not in pair_index.csv.")
+            raise PairDatasetError(f"{split_path}: pair {pair_id} is not in {index_path.name}.")
         if row.split != split:
             raise PairDatasetError(
                 f"{split_path}: pair {pair_id} is recorded as split {row.split!r}."
@@ -209,8 +252,12 @@ def load_split_pairs(pairs_dir: str | Path, split: str) -> list[PairRow]:
     expected = {pid for pid, row in index.items() if row.split == split}
     if expected != set(ids):
         raise PairDatasetError(
-            f"{split_path} and pair_index.csv disagree on {len(expected ^ set(ids))} pairs."
+            f"{split_path} and {index_path.name} disagree on {len(expected ^ set(ids))} pairs."
         )
+    return _check_selected(split, selected)
+
+
+def _check_selected(split: str, selected: list[PairRow]) -> list[PairRow]:
     if not selected:
         raise PairDatasetError(f"Split {split!r} has no pairs.")
     if {row.label for row in selected} != {0, 1}:
@@ -364,7 +411,10 @@ def load_split(
 ) -> tuple[list[PairRow], dict[str, str]]:
     """Checked pairs of one split plus the source text of every sample they use."""
     store = store or CodeStore(paths)
-    rows = [store.check_pair(row) for row in load_split_pairs(paths.pairs_dir, split)]
+    rows = [
+        store.check_pair(row)
+        for row in load_split_pairs(paths.pairs_dir, split, paths.index_csv)
+    ]
     codes: dict[str, str] = {}
     for row in rows:
         for sample_id in (row.sample_a_id, row.sample_b_id):

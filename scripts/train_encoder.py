@@ -27,6 +27,7 @@ from src.models.experiment import (  # noqa: E402
     planned_run_dir,
     resolve_dataset_version,
     utc_now,
+    utf8_console,
 )
 from src.models.pair_dataset import (  # noqa: E402
     CodeStore,
@@ -41,6 +42,7 @@ RESERVED_TRAIN_KEYS = {"run_id", "dataset_version", "output_dir", "device"}
 
 
 def main() -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description="Fine-tune a bi-encoder (II.4/II.5)")
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-id", required=True)
@@ -89,6 +91,7 @@ def main() -> int:
     dataset_info = {
         "version": dataset_version,
         "fingerprint": fingerprint(paths, ["train", "validation"]),
+        "split_source": paths.split_source,
         "train_pairs_total": len(train_rows),
         "train_pairs_used": len(train_examples),
         "train_subset_seed": seed if len(train_examples) < len(train_rows) else None,
