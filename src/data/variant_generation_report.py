@@ -1,21 +1,19 @@
-
 from __future__ import annotations
-
 import json
-import os
-import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
+from src.safety.safe_persistence import (
+    SafePersistence,
+    CollisionMode,
+    PersistenceStatus,
+)
 from src.transformations.variant_generator import (
     VariantGenerationResult,
 )
 
-
 REPORT_VERSION = "1.0"
-
 
 @dataclass
 class SampleGenerationReport:
@@ -194,33 +192,32 @@ class VariantGenerationReportExporter:
             exist_ok=True,
         )
 
-        temp_path: Path | None = None
+        payload = (
+            json.dumps(
+                report.to_dict(),
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
 
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=output_path.parent,
-                suffix=".tmp",
-                delete=False,
-            ) as temp_file:
-                temp_path = Path(temp_file.name)
+        persistence_result = SafePersistence.persist_bytes(
+            destination=output_path.absolute(),
+            payload=payload,
+            authorized_root=output_path.parent.resolve(),
+            collision_mode=CollisionMode.REPLACE,
+        )
 
-                json.dump(
-                    report.to_dict(),
-                    temp_file,
-                    indent=2,
-                    ensure_ascii=False,
+        if persistence_result.status not in (
+            PersistenceStatus.COMMITTED,
+            PersistenceStatus.COMMITTED_WITH_WARNINGS,
+        ):
+            raise OSError(
+                persistence_result.primary_error
+                or (
+                    "Variant report persistence failed: "
+                    f"{persistence_result.status.value}"
                 )
-                temp_file.write("\n")
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-
-            os.replace(temp_path, output_path)
-            temp_path = None
-
-        finally:
-            if temp_path is not None and temp_path.exists():
-                temp_path.unlink()
+            )
 
         return output_path

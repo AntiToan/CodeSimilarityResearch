@@ -1,12 +1,14 @@
-
 from __future__ import annotations
-
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
+from src.safety.safe_persistence import (
+    SafePersistence,
+    CollisionMode,
+    PersistenceStatus,
+)
 
 @dataclass
 class VariantGenerationRunSummary:
@@ -91,26 +93,32 @@ class VariantGenerationRunSummaryExporter:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        temporary_path = output_path.with_suffix(
-            output_path.suffix + ".tmp"
+        payload = (
+            json.dumps(
+                summary.to_dict(),
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+
+        persistence_result = SafePersistence.persist_bytes(
+            destination=output_path.absolute(),
+            payload=payload,
+            authorized_root=output_path.parent.resolve(),
+            collision_mode=CollisionMode.REPLACE,
         )
 
-        try:
-            with temporary_path.open(
-                "w", encoding="utf-8"
-            ) as file:
-                json.dump(
-                    summary.to_dict(),
-                    file,
-                    indent=2,
-                    ensure_ascii=False,
+        if persistence_result.status not in (
+            PersistenceStatus.COMMITTED,
+            PersistenceStatus.COMMITTED_WITH_WARNINGS,
+        ):
+            raise OSError(
+                persistence_result.primary_error
+                or (
+                    "Run summary persistence failed: "
+                    f"{persistence_result.status.value}"
                 )
-                file.write("\n")
-
-            temporary_path.replace(output_path)
-
-        finally:
-            if temporary_path.exists():
-                temporary_path.unlink()
+            )
 
         return output_path

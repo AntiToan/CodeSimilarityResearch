@@ -1,0 +1,12 @@
+{
+    "total_files": 3,
+    "successful_files": 3,
+    "failed_files": 0,
+    "encoding_counts": {
+        "utf-8-sig": 3
+    },
+    "total_original_bytes": 1473,
+    "total_processed_bytes": 1357,
+    "processing_time_seconds": 0.04,
+    "errors": []
+}

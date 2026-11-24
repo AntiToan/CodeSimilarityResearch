@@ -202,14 +202,14 @@ def test_rejection_does_not_create_files(tmp_path):
     assert after == before
 
 
-def test_valid_target_still_has_no_persistence_engine(tmp_path):
-    root = tmp_path / "output"
-    root.mkdir()
+# def test_valid_target_still_has_no_persistence_engine(tmp_path):
+#     root = tmp_path / "output"
+#     root.mkdir()
 
-    destination = root / "artifact.bin"
+#     destination = root / "artifact.bin"
 
-    with pytest.raises(NotImplementedError):
-        persist(destination, root=root)
+#     with pytest.raises(NotImplementedError):
+#         persist(destination, root=root)
 
-    assert not destination.exists()
-    assert list(root.iterdir()) == []
+#     assert not destination.exists()
+#     assert list(root.iterdir()) == []

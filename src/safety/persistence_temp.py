@@ -8,7 +8,8 @@ from enum import Enum
 import ctypes
 import msvcrt
 from ctypes import wintypes
-
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 TEMP_CREATE_MAX_ATTEMPTS = 8
 TEMP_FILE_MODE = 0o600
@@ -84,6 +85,48 @@ class TempFileOwnership:
     identity: tuple[int, int]
     attempt: int
 
+class TempOwnershipLifecycle(Enum):
+    ACTIVE = "active"
+    CONSUMED = "consumed"
+    REVOKED = "revoked"
+
+class TempCleanupOutcome(Enum):
+    CLEANED = "cleaned"
+    NOT_NEEDED = "not_needed"
+    PRESERVED = "preserved"
+    FAILED = "failed"
+
+class DirectorySyncState(Enum):
+    SYNCED = "synced"
+    UNSUPPORTED = "unsupported"
+    FAILED = "failed"
+
+@dataclass(frozen=True)
+class DirectorySyncResult:
+    state: DirectorySyncState
+    error: str | None = None
+
+@dataclass(frozen=True)
+class TempCleanupResult:
+    outcome: TempCleanupOutcome
+    path: Path
+    file_removed: bool
+    fd_closed: bool
+    error: str | None = None
+
+@dataclass
+class TempOwnershipRegistryRecord:
+    ownership: TempFileOwnership
+    lifecycle: TempOwnershipLifecycle = (
+        TempOwnershipLifecycle.ACTIVE
+    )
+
+_TEMP_OWNERSHIP_REGISTRY: dict[
+    str,
+    TempOwnershipRegistryRecord,
+] = {}
+_TEMP_OWNERSHIP_REGISTRY_LOCK = threading.Lock()
+
 class OwnershipVerificationState(Enum):
     VERIFIED = "verified"
     MISSING = "missing"
@@ -155,13 +198,21 @@ def create_owned_temp_file(destination: Path) -> TempFileOwnership:
 
         identity = (file_stat.st_dev, file_stat.st_ino)
 
-        return TempFileOwnership(
+        ownership = TempFileOwnership(
             transaction_id=transaction_id,
             path=temp_path,
             fd=fd,
             identity=identity,
             attempt=attempt,
         )
+
+        _TEMP_OWNERSHIP_REGISTRY[transaction_id] = (
+            TempOwnershipRegistryRecord(
+                ownership=ownership,
+            )
+        )
+
+        return ownership
 
     raise TempCreationError(
         f"Unable to reserve temp file after "
@@ -250,6 +301,81 @@ def verify_temp_ownership(
         descriptor_identity=descriptor_identity,
         path_identity=path_identity,
         error=None,
+    )
+
+
+def cleanup_owned_temp_file(
+    ownership: TempFileOwnership,
+    *,
+    preserve_temp: bool = False,
+) -> TempCleanupResult:
+    if not isinstance(ownership, TempFileOwnership):
+        raise TypeError("ownership must be TempFileOwnership.")
+
+    file_removed = False
+    fd_closed = False
+
+    with _TEMP_OWNERSHIP_REGISTRY_LOCK:
+        record = _TEMP_OWNERSHIP_REGISTRY.get(
+            ownership.transaction_id
+        )
+
+        if (
+            record is None
+            or record.ownership is not ownership
+            or record.lifecycle not in (
+                TempOwnershipLifecycle.ACTIVE,
+                TempOwnershipLifecycle.CONSUMED,
+            )
+            or (
+                preserve_temp
+                and record.lifecycle is not TempOwnershipLifecycle.ACTIVE
+            )
+        ):
+            return TempCleanupResult(
+                outcome=TempCleanupOutcome.FAILED,
+                path=ownership.path,
+                file_removed=False,
+                fd_closed=False,
+                error="Ownership is not active or registered.",
+            )
+
+        verification = verify_temp_ownership(ownership)
+
+        if verification.state is OwnershipVerificationState.MISSING:
+            outcome = TempCleanupOutcome.NOT_NEEDED
+
+        elif preserve_temp:
+            outcome = TempCleanupOutcome.PRESERVED
+
+        elif verification.state is not OwnershipVerificationState.VERIFIED:
+            outcome = TempCleanupOutcome.FAILED
+
+        else:
+            try:
+                ownership.path.unlink()
+                file_removed = True
+                outcome = TempCleanupOutcome.CLEANED
+            except FileNotFoundError:
+                outcome = TempCleanupOutcome.NOT_NEEDED
+            except OSError as exc:
+                outcome = TempCleanupOutcome.FAILED
+                error = f"Temp removal failed: {exc}"
+
+        try:
+            os.close(ownership.fd)
+            fd_closed = True
+        except OSError:
+            fd_closed = False
+
+        record.lifecycle = TempOwnershipLifecycle.REVOKED
+
+    return TempCleanupResult(
+        outcome=outcome,
+        path=ownership.path,
+        file_removed=file_removed,
+        fd_closed=fd_closed,
+        error=locals().get("error"),
     )
 
 class TempWriteError(Exception):
@@ -349,6 +475,56 @@ def sync_owned_temp_file(
             "Failed to sync owned temp file."
         ) from exc
 
+def sync_committed_directory(
+    destination: Path,
+) -> DirectorySyncResult:
+    """
+    Sync the parent directory after a successful atomic commit.
+
+    POSIX: opens and fsyncs the destination directory.
+    Windows: reports UNSUPPORTED rather than claiming durability.
+    """
+    if not isinstance(destination, Path):
+        raise TypeError("destination must be a Path.")
+
+    if not destination.is_absolute():
+        raise ValueError("destination must be absolute.")
+
+    if os.name == "nt":
+        return DirectorySyncResult(
+            state=DirectorySyncState.UNSUPPORTED,
+            error="Directory fsync is unsupported by this implementation on Windows.",
+        )
+
+    directory_fd = None
+
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+
+        directory_fd = os.open(
+            destination.parent,
+            flags,
+        )
+
+        os.fsync(directory_fd)
+
+        return DirectorySyncResult(
+            state=DirectorySyncState.SYNCED,
+        )
+
+    except OSError as exc:
+        return DirectorySyncResult(
+            state=DirectorySyncState.FAILED,
+            error=f"Directory sync failed: {exc}",
+        )
+
+    finally:
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+
 
 class PreCommitGateState(Enum):
     PASSED = "passed"
@@ -441,14 +617,12 @@ class AtomicCommitOutcome(Enum):
     NOT_COMMITTED = "not_committed"
     OUTCOME_UNKNOWN = "outcome_unknown"
 
-
 @dataclass(frozen=True)
 class AtomicCommitResult:
     outcome: AtomicCommitOutcome
     mode: AtomicCommitMode
     destination: Path
     error: Exception | None = None
-
 
 def commit_owned_temp_file(
     *,
@@ -465,78 +639,99 @@ def commit_owned_temp_file(
     if not isinstance(ownership, TempFileOwnership):
         raise TypeError("ownership must be TempFileOwnership")
 
-    if not isinstance(destination, Path):
-        raise TypeError("destination must be a Path")
+    with _TEMP_OWNERSHIP_REGISTRY_LOCK:
+        registered = _TEMP_OWNERSHIP_REGISTRY.get(
+            ownership.transaction_id
+        )
 
-    if not destination.is_absolute():
-        raise ValueError("destination must be absolute")
+        if (
+            registered is None
+            or registered.ownership is not ownership
+            or registered.lifecycle is not TempOwnershipLifecycle.ACTIVE
+        ):
+            return AtomicCommitResult(
+                outcome=AtomicCommitOutcome.NOT_COMMITTED,
+                mode=mode,
+                destination=destination,
+                error=RuntimeError(
+                    "Temp ownership is not registered by trusted layer."
+                ),
+            )
 
-    if not isinstance(mode, AtomicCommitMode):
-        raise TypeError("mode must be AtomicCommitMode")
+        if not isinstance(destination, Path):
+            raise TypeError("destination must be a Path")
 
-    if not isinstance(gate, PreCommitGateResult):
-        raise TypeError("gate must be PreCommitGateResult")
+        if not destination.is_absolute():
+            raise ValueError("destination must be absolute")
 
-    if not gate.allowed:
+        if not isinstance(mode, AtomicCommitMode):
+            raise TypeError("mode must be AtomicCommitMode")
+
+        if not isinstance(gate, PreCommitGateResult):
+            raise TypeError("gate must be PreCommitGateResult")
+
+        if not gate.allowed:
+            return AtomicCommitResult(
+                outcome=AtomicCommitOutcome.NOT_COMMITTED,
+                mode=mode,
+                destination=destination,
+                error=RuntimeError("Pre-commit gate denied commit."),
+            )
+
+        if ownership.path.parent != destination.parent:
+            raise ValueError(
+                "Temp file and destination must share the same parent directory."
+            )
+
+        verification = verify_temp_ownership(ownership)
+
+        if verification.state is not OwnershipVerificationState.VERIFIED:
+            return AtomicCommitResult(
+                outcome=AtomicCommitOutcome.NOT_COMMITTED,
+                mode=mode,
+                destination=destination,
+                error=RuntimeError(
+                    "Temp ownership verification failed before commit: "
+                    f"{verification.state.value}"
+                ),
+            )
+
+        try:
+            if mode is AtomicCommitMode.FAIL_IF_EXISTS:
+                os.link(ownership.path, destination)
+            else:
+                os.replace(ownership.path, destination)
+
+        except FileExistsError as exc:
+            return AtomicCommitResult(
+                outcome=AtomicCommitOutcome.NOT_COMMITTED,
+                mode=mode,
+                destination=destination,
+                error=exc,
+            )
+
+        except FileNotFoundError as exc:
+            return AtomicCommitResult(
+                outcome=AtomicCommitOutcome.NOT_COMMITTED,
+                mode=mode,
+                destination=destination,
+                error=exc,
+            )
+
+        except OSError as exc:
+            # Conservatively classify other filesystem errors:
+            # commit outcome may not be safely inferable.
+            return AtomicCommitResult(
+                outcome=AtomicCommitOutcome.OUTCOME_UNKNOWN,
+                mode=mode,
+                destination=destination,
+                error=exc,
+            )
+
+        registered.lifecycle = TempOwnershipLifecycle.CONSUMED
+
         return AtomicCommitResult(
-            outcome=AtomicCommitOutcome.NOT_COMMITTED,
+            outcome=AtomicCommitOutcome.COMMITTED,
             mode=mode,
             destination=destination,
-            error=RuntimeError("Pre-commit gate denied commit."),
         )
-
-    if ownership.path.parent != destination.parent:
-        raise ValueError(
-            "Temp file and destination must share the same parent directory."
-        )
-
-    verification = verify_temp_ownership(ownership)
-
-    if verification.state is not OwnershipVerificationState.VERIFIED:
-        return AtomicCommitResult(
-            outcome=AtomicCommitOutcome.NOT_COMMITTED,
-            mode=mode,
-            destination=destination,
-            error=RuntimeError(
-                "Temp ownership verification failed before commit: "
-                f"{verification.state.value}"
-            ),
-        )
-
-    try:
-        if mode is AtomicCommitMode.FAIL_IF_EXISTS:
-            os.link(ownership.path, destination)
-        else:
-            os.replace(ownership.path, destination)
-
-    except FileExistsError as exc:
-        return AtomicCommitResult(
-            outcome=AtomicCommitOutcome.NOT_COMMITTED,
-            mode=mode,
-            destination=destination,
-            error=exc,
-        )
-
-    except FileNotFoundError as exc:
-        return AtomicCommitResult(
-            outcome=AtomicCommitOutcome.NOT_COMMITTED,
-            mode=mode,
-            destination=destination,
-            error=exc,
-        )
-
-    except OSError as exc:
-        # Conservatively classify other filesystem errors:
-        # commit outcome may not be safely inferable.
-        return AtomicCommitResult(
-            outcome=AtomicCommitOutcome.OUTCOME_UNKNOWN,
-            mode=mode,
-            destination=destination,
-            error=exc,
-        )
-
-    return AtomicCommitResult(
-        outcome=AtomicCommitOutcome.COMMITTED,
-        mode=mode,
-        destination=destination,
-    )

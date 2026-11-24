@@ -1,5 +1,12 @@
-import csv 
+import csv
+import io
 from pathlib import Path
+
+from src.safety.safe_persistence import (
+    SafePersistence,
+    CollisionMode,
+    PersistenceStatus,
+)
 
 METADATA_FIELDS = [
     "sample_id",
@@ -39,64 +46,84 @@ def generate_metadata(
     successful_samples = 0
     failed_samples = 0
 
-    with csv_path.open("w", encoding="utf-8", newline="") as csv_file:
-        writer = csv.DictWriter(
-            csv_file, 
-            fieldnames=METADATA_FIELDS,
+    csv_buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        csv_buffer,
+        fieldnames=METADATA_FIELDS,
+    )
+
+    writer.writeheader()
+
+    for raw_file in source_files:
+        relative_path = raw_file.relative_to(raw_path)
+        problem_id = relative_path.parts[0]
+        filename = raw_file.name
+        file_stem = raw_file.stem
+
+        # processed_file = processed_path / relative_path
+        processed_file = processed_path / relative_path
+
+        if total_samples == 0:
+            print("DEBUG raw_path:", raw_path.resolve())
+            print("DEBUG processed_path:", processed_path.resolve())
+            print("DEBUG relative_path:", relative_path)
+            print("DEBUG processed_file:", processed_file.resolve())
+            print("DEBUG file_exists:", processed_file.is_file())
+
+        sample_id = (
+            f"poj104_{problem_id}_{file_stem}"
         )
 
-        writer.writeheader()
+        status = (
+            "success"
+            if processed_file.is_file()
+            else "failed"
+        )
 
-        for raw_file in source_files:
-            relative_path = raw_file.relative_to(raw_path)
-            problem_id = relative_path.parts[0]
-            filename = raw_file.name 
-            file_stem = raw_file.stem 
+        if status == "success":
+            file_size = processed_file.stat().st_size
+            successful_samples += 1
+        else:
+            file_size = 0
+            failed_samples += 1
 
-            # processed_file = processed_path / relative_path
-            processed_file = processed_path / relative_path
+        record = {
+            "sample_id": sample_id,
+            "problem_id": problem_id,
+            "filename": filename,
+            "language": "cpp",
+            "source_path": processed_file.relative_to(
+                processed_path.parent
+            ).as_posix(),
+            "original_path": raw_file.relative_to(
+                raw_path.parent
+            ).as_posix(),
+            "file_size_bytes": file_size,
+            "status": status,
+        }
 
-            if total_samples == 0:
-                print("DEBUG raw_path:", raw_path.resolve())
-                print("DEBUG processed_path:", processed_path.resolve())
-                print("DEBUG relative_path:", relative_path)
-                print("DEBUG processed_file:", processed_file.resolve())
-                print("DEBUG file_exists:", processed_file.is_file())
+        writer.writerow(record)
+        total_samples += 1
 
-            sample_id = (
-                f"poj104_{problem_id}_{file_stem}"
-            )
+    csv_payload = csv_buffer.getvalue().encode("utf-8")
 
-            status = (
-                "success"
-                if processed_file.is_file()
-                else "failed"
-            )
+    persistence_result = SafePersistence.persist_bytes(
+        destination=csv_path.absolute(),
+        payload=csv_payload,
+        authorized_root=csv_path.parent.resolve(),
+        collision_mode=CollisionMode.REPLACE,
+    )
 
-            if status == "success":
-                file_size = processed_file.stat().st_size
-                successful_samples += 1
-            else:
-                file_size = 0
-                failed_samples += 1
+    if persistence_result.status not in (
+        PersistenceStatus.COMMITTED,
+        PersistenceStatus.COMMITTED_WITH_WARNINGS,
+    ):
+        raise OSError(
+            persistence_result.primary_error
+            or f"Metadata persistence failed: {persistence_result.status.value}"
+        )
 
-            record = {
-                "sample_id": sample_id,
-                "problem_id": problem_id,
-                "filename": filename,
-                "language": "cpp",
-                "source_path": processed_file.relative_to(
-                    processed_path.parent
-                ).as_posix(),
-                "original_path": raw_file.relative_to(
-                    raw_path.parent
-                ).as_posix(),
-                "file_size_bytes": file_size,
-                "status": status,
-            }
-
-            writer.writerow(record)
-            total_samples += 1
+    csv_buffer.close()
 
     return {
         "total_samples": total_samples,
