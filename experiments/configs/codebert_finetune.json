@@ -1,0 +1,30 @@
+{
+  "experiment_id": "II.5-codebert-contrastive",
+  "checkpoint": "II.5",
+  "dataset_version": null,
+  "data": {
+    "pairs_dir": "data/pairs",
+    "samples_csv": "data/processed/poj104/metadata/samples.csv",
+    "samples_root": "data/processed",
+    "source_splits_csv": "data/processed/poj104/metadata/source_splits.csv",
+    "variants_csv": "data/processed/poj104/metadata/variant_registry.csv",
+    "variants_root": "data/processed/poj104/variants"
+  },
+  "train": {
+    "model_name": "microsoft/codebert-base",
+    "pooling": "cls",
+    "max_length": 512,
+    "batch_size": 8,
+    "learning_rate": 2e-5,
+    "epochs": 3,
+    "margin": 0.5,
+    "seed": 42,
+    "mode_token": null,
+    "selection_metric": "val_f1"
+  },
+  "grid": {
+    "learning_rate": [1e-5, 2e-5],
+    "margin": [0.3, 0.5]
+  },
+  "notes": "Starting values, not tuned results. Run a pilot first (--max-train-pairs 2000). Every trial is judged on validation only; evaluate the chosen checkpoint on test once, in III.2."
+}

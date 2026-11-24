@@ -213,3 +213,50 @@ def test_training_rejects_empty_splits():
     model = BiEncoder(tiny_encoder())
     with pytest.raises(ValueError):
         train(model, WhitespaceTokenizer(), [], toy_pairs(), TrainConfig())
+
+
+# ---------- II.5: selection on validation F1 ----------
+
+def test_val_f1_selection_stores_validation_threshold(tmp_path):
+    output_dir = tmp_path / "run"
+    config = TrainConfig(
+        batch_size=4,
+        learning_rate=1e-2,
+        epochs=3,
+        max_length=32,
+        run_id="toy",
+        dataset_version="toy",
+        output_dir=str(output_dir),
+        selection_metric="val_f1",
+    )
+    pairs = toy_pairs()
+    result = train(BiEncoder(tiny_encoder()), WhitespaceTokenizer(), pairs, pairs, config,
+                   dataset_info={"version": "toy"})
+
+    assert result.best_val_f1 is not None and 0.0 <= result.best_val_f1 <= 1.0
+    assert all(record.val_f1 is not None and record.val_roc_auc is not None
+               for record in result.history)
+    best = max(result.history, key=lambda r: (r.val_f1, -r.val_loss))
+    assert result.best_epoch == best.epoch
+
+    meta = json.loads((output_dir / checkpoint_name(config, result.best_epoch)
+                       / "bi_encoder.json").read_text(encoding="utf-8"))
+    assert meta["threshold"] == result.best_threshold
+    assert meta["threshold_selected_on"] == "validation"
+    assert meta["selection_metric"] == "val_f1"
+
+    report = json.loads((output_dir / "run_report.json").read_text(encoding="utf-8"))
+    assert report["best_val_f1"] == result.best_val_f1
+    assert report["dataset"] == {"version": "toy"}
+
+
+def test_val_f1_selection_needs_both_labels_in_validation():
+    config = TrainConfig(selection_metric="val_f1", max_length=32)
+    positives = [pair for pair in toy_pairs() if pair.label == 1]
+    with pytest.raises(ValueError, match="positive and negative"):
+        train(BiEncoder(tiny_encoder()), WhitespaceTokenizer(), toy_pairs(), positives, config)
+
+
+def test_config_rejects_unknown_selection_metric():
+    with pytest.raises(ValueError):
+        TrainConfig(selection_metric="accuracy")
