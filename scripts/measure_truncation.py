@@ -10,10 +10,12 @@ Result: experiments/results/<run-id>/truncation.json (never overwritten).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import subprocess
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -83,16 +85,49 @@ def main() -> int:
 
     embedder = CodeEmbedder(EmbeddingConfig(model_name=args.model, max_length=args.max_length))
     per_split: dict[str, dict] = {}
-    all_lengths: list[int] = []
+    split_counts: dict[str, Counter] = {}
+    length_of: dict[tuple[str, str], int] = {}
+    labels_by_split: dict[str, set[str]] = {}
+    rows_loaded = 0
     empty_excluded = 0
 
     for split in args.splits:
         data = datasets.load_dataset(args.dataset, split=split)
-        codes = [code for code in data["code"] if isinstance(code, str) and code.strip()]
-        empty_excluded += len(data) - len(codes)
-        lengths = embedder.token_lengths(codes)
+        rows_loaded += len(data)
+        kept = [
+            (str(label), code)
+            for label, code in zip(data["label"], data["code"])
+            if isinstance(code, str) and code.strip()
+        ]
+        empty_excluded += len(data) - len(kept)
+        lengths = embedder.token_lengths([code for _, code in kept])
         per_split[split] = summarize(lengths, args.max_length)
-        all_lengths.extend(lengths)
+
+        counts: Counter = Counter()
+        for (label, code), length in zip(kept, lengths):
+            key = (label, hashlib.sha256(code.encode("utf-8")).hexdigest())
+            counts[key] += 1
+            length_of[key] = length
+        split_counts[split] = counts
+        labels_by_split[split] = {label for label, _ in kept}
+
+    # The Hugging Face copy repeats whole problems at split boundaries
+    # (e.g. problem 65 in train and validation). Count each program once:
+    # for every (label, code) keep the largest multiplicity seen in any one
+    # split, which preserves genuine duplicates inside a split.
+    merged: Counter = Counter()
+    for counts in split_counts.values():
+        merged |= counts
+    all_lengths = [length_of[key] for key, count in merged.items() for _ in range(count)]
+
+    label_splits: dict[str, list[str]] = {}
+    for split, labels in labels_by_split.items():
+        for label in labels:
+            label_splits.setdefault(label, []).append(split)
+    shared_labels = sorted(
+        (label for label, splits in label_splits.items() if len(splits) > 1),
+        key=lambda value: (len(value), value),
+    )
 
     result = {
         "checkpoint": "II.2",
@@ -106,7 +141,12 @@ def main() -> int:
             "splits": args.splits,
         },
         "overall": summarize(all_lengths, args.max_length),
+        "overall_note": "each program counted once (cross-split repeats removed)",
         "per_split": per_split,
+        "per_split_note": "splits exactly as published, repeats included",
+        "rows_loaded": rows_loaded,
+        "cross_split_duplicate_rows": rows_loaded - empty_excluded - len(all_lengths),
+        "labels_in_multiple_splits": {label: label_splits[label] for label in shared_labels},
         "empty_programs_excluded": empty_excluded,
         "git_commit": git_commit(),
         "environment": {
