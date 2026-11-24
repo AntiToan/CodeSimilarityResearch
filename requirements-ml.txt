@@ -1,0 +1,5 @@
+# Phase II (CodeBERT / UniXcoder).
+# Install PyTorch first, using the selector at https://pytorch.org (CPU or CUDA build),
+# then: python -m pip install -r requirements-ml.txt
+-r requirements.txt
+transformers==4.46.3

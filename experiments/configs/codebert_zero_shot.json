@@ -1,0 +1,20 @@
+{
+  "experiment_id": "II.2-codebert-zero-shot",
+  "checkpoint": "II.2",
+  "seed": 42,
+  "dataset_version": null,
+  "embedding": {
+    "model_name": "microsoft/codebert-base",
+    "max_length": 512,
+    "pooling": "cls",
+    "batch_size": 8,
+    "device": "cpu"
+  },
+  "ablations": {
+    "pooling": ["cls", "mean"],
+    "preprocessing_mode": ["raw", "basic"]
+  },
+  "score": "(cosine + 1) / 2",
+  "threshold_selection": "validation split only, frozen before test",
+  "notes": "dataset_version is filled in after the pair dataset is frozen (I.8/I.9). Do not run on the test split at this stage."
+}
